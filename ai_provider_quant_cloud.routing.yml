@@ -1,0 +1,39 @@
+ai_provider_quant_cloud.settings_form:
+  path: '/admin/config/ai/quant-cloud'
+  defaults:
+    _form: '\Drupal\ai_provider_quant_cloud\Form\QuantCloudConfigForm'
+    _title: 'Quant Cloud AI Settings'
+  requirements:
+    _permission: 'administer site configuration'
+  options:
+    _admin_route: TRUE
+
+ai_provider_quant_cloud.oauth_connect:
+  path: '/admin/config/ai/quant-cloud/oauth/connect'
+  defaults:
+    _controller: '\Drupal\ai_provider_quant_cloud\Controller\OAuthController::connect'
+    _title: 'Connect to Quant Cloud'
+  requirements:
+    _permission: 'administer site configuration'
+  options:
+    _admin_route: TRUE
+
+ai_provider_quant_cloud.oauth_callback:
+  path: '/admin/config/ai/quant-cloud/oauth/callback'
+  defaults:
+    _controller: '\Drupal\ai_provider_quant_cloud\Controller\OAuthController::callback'
+    _title: 'OAuth Callback'
+  requirements:
+    _permission: 'administer site configuration'
+  options:
+    _admin_route: TRUE
+
+ai_provider_quant_cloud.oauth_disconnect:
+  path: '/admin/config/ai/quant-cloud/oauth/disconnect'
+  defaults:
+    _controller: '\Drupal\ai_provider_quant_cloud\Controller\OAuthController::disconnect'
+    _title: 'Disconnect from Quant Cloud'
+  requirements:
+    _permission: 'administer site configuration'
+  options:
+    _admin_route: TRUE

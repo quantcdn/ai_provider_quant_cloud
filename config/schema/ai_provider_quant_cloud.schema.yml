@@ -1,0 +1,53 @@
+ai_provider_quant_cloud.settings:
+  type: config_object
+  label: 'Quant Cloud AI Provider settings'
+  mapping:
+    platform:
+      type: string
+      label: 'Platform'
+    platforms:
+      type: mapping
+      label: 'Platform configurations'
+      mapping:
+        quantcdn:
+          type: mapping
+          mapping:
+            dashboard_url:
+              type: string
+            label:
+              type: string
+        quantgov:
+          type: mapping
+          mapping:
+            dashboard_url:
+              type: string
+            label:
+              type: string
+    auth:
+      type: mapping
+      label: 'Authentication'
+      mapping:
+        method:
+          type: string
+        access_token_key:
+          type: string
+        organization_id:
+          type: string
+
+ai_provider.plugin.quant_cloud:
+  type: mapping
+  label: 'Quant Cloud AI Provider Configuration'
+  mapping:
+    platform:
+      type: string
+      label: 'Platform'
+    auth:
+      type: mapping
+      mapping:
+        method:
+          type: string
+        access_token_key:
+          type: string
+        organization_id:
+          type: string
+

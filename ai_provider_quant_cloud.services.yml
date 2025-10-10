@@ -1,0 +1,31 @@
+services:
+  ai_provider_quant_cloud.client:
+    class: Drupal\ai_provider_quant_cloud\Client\QuantCloudClient
+    arguments:
+      - '@http_client'
+      - '@config.factory'
+      - '@logger.factory'
+      - '@key.repository'
+
+  ai_provider_quant_cloud.streaming_client:
+    class: Drupal\ai_provider_quant_cloud\Client\QuantCloudStreamingClient
+    arguments:
+      - '@http_client'
+      - '@config.factory'
+      - '@logger.factory'
+      - '@key.repository'
+
+  ai_provider_quant_cloud.models:
+    class: Drupal\ai_provider_quant_cloud\Service\ModelsService
+    arguments:
+      - '@ai_provider_quant_cloud.client'
+      - '@cache.default'
+      - '@logger.factory'
+
+  ai_provider_quant_cloud.auth:
+    class: Drupal\ai_provider_quant_cloud\Service\AuthService
+    arguments:
+      - '@http_client'
+      - '@config.factory'
+      - '@logger.factory'
+      - '@key.repository'

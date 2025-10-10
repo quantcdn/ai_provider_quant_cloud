@@ -1,0 +1,62 @@
+chat:
+  input:
+    description: 'Chat messages for the AI model.'
+    type: 'array'
+    default:
+      - { role: "user", content: "Hello, how can you help me today?" }
+    required: true
+  authentication:
+    description: 'Quant Cloud API token.'
+    type: 'string'
+    default: ''
+    required: true
+  configuration:
+    max_tokens:
+      label: 'Max Tokens'
+      description: 'The maximum number of tokens to generate.'
+      type: 'integer'
+      default: 1000
+      required: false
+      constraints:
+        min: 1
+        max: 8192
+    temperature:
+      label: 'Temperature'
+      description: 'Sampling temperature between 0 and 1. Higher values mean more random output.'
+      type: 'float'
+      default: 0.7
+      required: false
+      constraints:
+        min: 0
+        max: 1
+        step: 0.01
+
+embeddings:
+  input:
+    description: 'Text to convert to embeddings.'
+    type: 'array'
+    default:
+      - 'The quick brown fox jumps over the lazy dog.'
+    required: true
+  authentication:
+    description: 'Quant Cloud API token.'
+    type: 'string'
+    default: ''
+    required: true
+  configuration:
+    dimensions:
+      label: 'Dimensions'
+      description: 'Number of dimensions for the embedding vector.'
+      type: 'integer'
+      default: 1024
+      required: false
+      constraints:
+        min: 256
+        max: 2048
+    normalize:
+      label: 'Normalize'
+      description: 'Whether to normalize the embedding vectors.'
+      type: 'boolean'
+      default: true
+      required: false
+

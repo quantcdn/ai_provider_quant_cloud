@@ -1,0 +1,127 @@
+<?php
+
+namespace Drupal\ai_provider_quant_cloud\Client;
+
+/**
+ * Streaming HTTP client for Quant Cloud AI API (Server-Sent Events).
+ *
+ * Provides SSE streaming support for real-time AI responses.
+ */
+class QuantCloudStreamingClient extends QuantCloudClient {
+
+  /**
+   * Chat with streaming response (SSE).
+   * 
+   * Dashboard API route: POST /api/v3/organisations/{orgId}/ai/chat/stream
+   *
+   * @param array $messages
+   *   Chat messages.
+   * @param string $model_id
+   *   Model ID.
+   * @param callable $callback
+   *   Callback function to handle each chunk.
+   * @param array $options
+   *   Additional options.
+   *
+   * @return array
+   *   Final response data.
+   */
+  public function chatStream(array $messages, string $model_id, callable $callback, array $options = []): array {
+    $config = $this->getConfig();
+    $url = $this->buildApiUrl('chat/stream');
+    
+    $data = [
+      'messages' => $messages,
+      'modelId' => $model_id,
+      'temperature' => $options['temperature'] ?? $config->get('model.temperature') ?? 0.7,
+      'maxTokens' => $options['maxTokens'] ?? $config->get('model.max_tokens') ?? 1000,
+    ];
+    
+    $request_options = [
+      'headers' => array_merge($this->getHeaders(), [
+        'Accept' => 'text/event-stream', // SSE
+      ]),
+      'json' => $data,
+      'stream' => TRUE,
+      'timeout' => $config->get('advanced.streaming_timeout') ?? 60,
+    ];
+    
+    try {
+      $response = $this->httpClient->post($url, $request_options);
+      $body = $response->getBody();
+      
+      $full_content = '';
+      $final_data = NULL;
+      
+      // Read SSE stream
+      while (!$body->eof()) {
+        $line = $this->readLine($body);
+        
+        // Parse SSE format
+        if (strpos($line, 'data: ') === 0) {
+          $json_data = json_decode(substr($line, 6), TRUE);
+          
+          if (isset($json_data['delta'])) {
+            $full_content .= $json_data['delta'];
+            $callback($json_data['delta'], FALSE);
+          }
+          
+          if ($json_data['complete'] ?? FALSE) {
+            $final_data = $json_data;
+            break;
+          }
+        }
+      }
+      
+      return $final_data ?? [
+        'response' => ['role' => 'assistant', 'content' => $full_content],
+        'complete' => TRUE,
+      ];
+      
+    }
+    catch (\Exception $e) {
+      $this->logger->error('Streaming request failed: @message', [
+        '@message' => $e->getMessage(),
+      ]);
+      throw new \RuntimeException('Streaming failed: ' . $e->getMessage(), 0, $e);
+    }
+  }
+
+  /**
+   * Read a line from stream.
+   */
+  protected function readLine($stream): string {
+    $line = '';
+    while (!$stream->eof()) {
+      $char = $stream->read(1);
+      if ($char === "\n") {
+        break;
+      }
+      $line .= $char;
+    }
+    return trim($line);
+  }
+
+  /**
+   * Completion with streaming (SSE).
+   * 
+   * Note: Uses chat/stream endpoint as Dashboard API doesn't have a separate
+   * completion endpoint. Converts prompt to chat message format.
+   */
+  public function completeStream(string $prompt, string $model_id, callable $callback, array $options = []): array {
+    $config = $this->getConfig();
+    
+    // Convert text-to-text to chat message format
+    $messages = [
+      [
+        'role' => 'user',
+        'content' => $prompt,
+      ],
+    ];
+    
+    // Use chatStream for completion
+    return $this->chatStream($messages, $model_id, $callback, $options);
+  }
+
+}
+

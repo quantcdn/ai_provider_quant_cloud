@@ -1,0 +1,7 @@
+ai_provider_quant_cloud.settings:
+  title: 'Quant Cloud AI'
+  description: 'Configure Quant Cloud AI provider settings'
+  route_name: ai_provider_quant_cloud.settings_form
+  parent: ai.admin_providers
+  weight: 10
+

@@ -1,0 +1,32 @@
+{
+  "name": "drupal/ai_provider_quant_cloud",
+  "description": "Drupal AI provider for Quant Cloud platform (QuantCDN & QuantGov Cloud)",
+  "type": "drupal-module",
+  "license": "GPL-2.0-or-later",
+  "keywords": ["drupal", "ai", "artificial intelligence", "llm", "quant", "bedrock", "claude", "nova"],
+  "homepage": "https://www.drupal.org/project/ai_provider_quant_cloud",
+  "authors": [
+    {
+      "name": "Quant Cloud",
+      "homepage": "https://quantcdn.io",
+      "role": "Maintainer"
+    }
+  ],
+  "support": {
+    "issues": "https://www.drupal.org/project/issues/ai_provider_quant_cloud",
+    "source": "https://git.drupalcode.org/project/ai_provider_quant_cloud",
+    "docs": "https://docs.quantcdn.io"
+  },
+  "require": {
+    "php": ">=8.1",
+    "drupal/core": "^10.3 || ^11",
+    "drupal/ai": "^1.0",
+    "drupal/key": "^1.17"
+  },
+  "require-dev": {
+    "drupal/core-dev": "^10.3 || ^11"
+  },
+  "minimum-stability": "dev",
+  "prefer-stable": true
+}
+

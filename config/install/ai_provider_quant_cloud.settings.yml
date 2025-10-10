@@ -1,0 +1,20 @@
+# Default configuration for Quant Cloud AI Provider
+
+# Platform selection
+platform: 'quantcdn'
+
+# Platform-specific dashboard URLs (used for OAuth and API routing)
+platforms:
+  quantcdn:
+    dashboard_url: 'https://dashboard.quantcdn.io'
+    label: 'QuantCDN'
+  quantgov:
+    dashboard_url: 'https://dash.quantgov.cloud'
+    label: 'QuantGov Cloud'
+
+# Authentication
+auth:
+  method: 'oauth'  # oauth or manual_token
+  access_token_key: ''  # Key module key ID for access token
+  organization_id: ''
+

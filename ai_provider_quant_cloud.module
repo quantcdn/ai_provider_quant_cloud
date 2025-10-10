@@ -1,0 +1,52 @@
+<?php
+
+/**
+ * @file
+ * Quant Cloud AI Provider module.
+ */
+
+use Drupal\Core\Routing\RouteMatchInterface;
+
+/**
+ * Implements hook_help().
+ */
+function ai_provider_quant_cloud_help($route_name, RouteMatchInterface $route_match) {
+  switch ($route_name) {
+    case 'help.page.ai_provider_quant_cloud':
+      $output = '<h3>' . t('About') . '</h3>';
+      $output .= '<p>' . t('The Quant Cloud AI Provider module enables integration with Quant Cloud AI services, providing access to AWS Bedrock models through the Quant Cloud platform.') . '</p>';
+      
+      $output .= '<h3>' . t('Features') . '</h3>';
+      $output .= '<ul>';
+      $output .= '<li>' . t('<strong>Chat Completions:</strong> Multi-turn conversations with Claude and Nova models') . '</li>';
+      $output .= '<li>' . t('<strong>Embeddings:</strong> Vector generation for semantic search and RAG applications') . '</li>';
+      $output .= '<li>' . t('<strong>OAuth Authentication:</strong> Secure integration with Quant Cloud platform') . '</li>';
+      $output .= '<li>' . t('<strong>Dynamic Model Discovery:</strong> Automatically fetch available models from API') . '</li>';
+      $output .= '<li>' . t('<strong>Multi-Tenant:</strong> Organization-level access control') . '</li>';
+      $output .= '<li>' . t('<strong>Government-Ready:</strong> Designed for compliance with Australian government standards') . '</li>';
+      $output .= '</ul>';
+      
+      $output .= '<h3>' . t('Platform Support') . '</h3>';
+      $output .= '<p>' . t('This provider works with both:') . '</p>';
+      $output .= '<ul>';
+      $output .= '<li>' . t('<strong>QuantCDN:</strong> https://dashboard.quantcdn.io') . '</li>';
+      $output .= '<li>' . t('<strong>QuantGov Cloud:</strong> https://dash.quantgov.cloud') . '</li>';
+      $output .= '</ul>';
+      
+      $output .= '<h3>' . t('Configuration') . '</h3>';
+      $output .= '<p>' . t('Configure the provider at <a href=":url">Administration > Configuration > AI > Quant Cloud AI Settings</a>.', [
+        ':url' => \Drupal::url('ai_provider_quant_cloud.settings_form'),
+      ]) . '</p>';
+      
+      $output .= '<h3>' . t('Authentication') . '</h3>';
+      $output .= '<p>' . t('The module supports OAuth2 authentication through the Quant Cloud dashboard. You will need:') . '</p>';
+      $output .= '<ul>';
+      $output .= '<li>' . t('An active Quant Cloud account') . '</li>';
+      $output .= '<li>' . t('API access token from your dashboard') . '</li>';
+      $output .= '<li>' . t('Organization ID') . '</li>';
+      $output .= '</ul>';
+      
+      return $output;
+  }
+}
+
