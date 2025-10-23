@@ -216,6 +216,21 @@ class QuantCloudClient {
       'maxTokens' => $options['maxTokens'] ?? $config->get('model.max_tokens') ?? 1000,
     ];
     
+    // Add structured output (JSON Schema) if provided
+    if (isset($options['responseFormat'])) {
+      $data['responseFormat'] = $options['responseFormat'];
+    }
+    
+    // Add function calling (tools) if provided
+    if (isset($options['toolConfig'])) {
+      $data['toolConfig'] = $options['toolConfig'];
+    }
+    
+    // Add system prompt if provided
+    if (isset($options['systemPrompt'])) {
+      $data['systemPrompt'] = $options['systemPrompt'];
+    }
+    
     return $this->post('chat', $data);
   }
 

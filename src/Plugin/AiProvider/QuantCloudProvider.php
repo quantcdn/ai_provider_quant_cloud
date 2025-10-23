@@ -125,8 +125,11 @@ class QuantCloudProvider extends AiProviderClientBase implements
     }
     
     // Return all models if no operation type specified
+    // However, filter chat models only by default to avoid showing embedding models everywhere
     try {
-      $api_models = $this->modelsService->getModels();
+      // Default to chat models if no operation type specified
+      // This prevents embedding models from showing up in chat interfaces
+      $api_models = $this->modelsService->getModels('chat');
       
       $models = [];
       foreach ($api_models as $model) {
@@ -191,8 +194,33 @@ class QuantCloudProvider extends AiProviderClientBase implements
       $input = new ChatInput($messages);
     }
     
-    // Format messages
+    // Format messages (supports multimodal content)
     $messages = $this->formatMessages($input->getMessages());
+    
+    // Build request options
+    $options = [];
+    
+    // Check for structured output (JSON Schema)
+    if ($input->getChatStructuredJsonSchema()) {
+      $schema = $input->getChatStructuredJsonSchema();
+      $options['responseFormat'] = [
+        'type' => 'json',
+        'jsonSchema' => $schema,
+      ];
+    }
+    
+    // Check for tools/function calling
+    if ($input->getChatTools()) {
+      $tools_input = $input->getChatTools();
+      $options['toolConfig'] = [
+        'tools' => $this->formatToolsForApi($tools_input),
+      ];
+    }
+    
+    // Check for system prompt
+    if (method_exists($input, 'getSystemRole') && $input->getSystemRole()) {
+      $options['systemPrompt'] = $input->getSystemRole();
+    }
     
     try {
       // Check if streaming is requested via tags
@@ -206,17 +234,19 @@ class QuantCloudProvider extends AiProviderClientBase implements
           $model_id,
           function($delta, $is_complete) use (&$full_content) {
             $full_content .= $delta;
-          }
+          },
+          $options
         );
         
         $response_data = [
           'role' => 'assistant',
           'content' => $full_content,
         ];
+        $result = [];
       }
       else {
         // Buffered (default) - best for forms and batch processing
-        $result = $this->client->chat($messages, $model_id);
+        $result = $this->client->chat($messages, $model_id, $options);
         $response_data = $result['response'] ?? [];
       }
       
@@ -225,6 +255,20 @@ class QuantCloudProvider extends AiProviderClientBase implements
       
       // Create ChatMessage for the response
       $message = new ChatMessage($role, $content);
+      
+      // Check if response includes tool use
+      if (isset($response_data['toolUse'])) {
+        $tool_use = $response_data['toolUse'];
+        
+        // Add tools to the message
+        $message->setTools([
+          [
+            'id' => $tool_use['toolUseId'],
+            'name' => $tool_use['name'],
+            'arguments' => $tool_use['input'],
+          ],
+        ]);
+      }
       
       return new ChatOutput($message, $result, NULL);
       
@@ -353,20 +397,214 @@ class QuantCloudProvider extends AiProviderClientBase implements
 
   /**
    * Format chat messages for API.
+   * 
+   * Supports multimodal content (images, videos, documents) for Nova models.
    */
   protected function formatMessages(array $messages): array {
     $formatted = [];
     
     foreach ($messages as $message) {
       if ($message instanceof ChatMessage) {
-        $formatted[] = [
-          'role' => $message->getRole(),
-          'content' => $message->getText(),
-        ];
+        $content = $message->getText();
+        
+        // Check if message has attachments (multimodal content)
+        // Note: Drupal AI module stores attachments in various ways depending on version
+        $has_attachments = method_exists($message, 'getAttachments') && 
+                          !empty($message->getAttachments());
+        
+        if ($has_attachments) {
+          // Build multimodal content array
+          $content_blocks = [];
+          
+          // Add attachments first (images, videos, documents)
+          foreach ($message->getAttachments() as $attachment) {
+            $content_blocks[] = $this->formatAttachment($attachment);
+          }
+          
+          // Add text prompt last
+          if ($message->getText()) {
+            $content_blocks[] = ['text' => $message->getText()];
+          }
+          
+          $formatted[] = [
+            'role' => $message->getRole(),
+            'content' => $content_blocks,
+          ];
+        }
+        else {
+          // Simple text message
+          $formatted[] = [
+            'role' => $message->getRole(),
+            'content' => $content,
+          ];
+        }
       }
     }
     
     return $formatted;
+  }
+
+  /**
+   * Format an attachment for multimodal API request.
+   * 
+   * @param mixed $attachment
+   *   The attachment object from Drupal AI.
+   * 
+   * @return array
+   *   Formatted content block for the API.
+   */
+  protected function formatAttachment($attachment): array {
+    // Determine attachment type
+    $type = $attachment['type'] ?? 'image';
+    $mime_type = $attachment['mime_type'] ?? $attachment['mimeType'] ?? '';
+    
+    // Extract format from MIME type
+    $format = 'jpeg'; // default
+    if (str_contains($mime_type, 'png')) {
+      $format = 'png';
+    }
+    elseif (str_contains($mime_type, 'gif')) {
+      $format = 'gif';
+    }
+    elseif (str_contains($mime_type, 'webp')) {
+      $format = 'webp';
+    }
+    elseif (str_contains($mime_type, 'mp4')) {
+      $format = 'mp4';
+    }
+    elseif (str_contains($mime_type, 'quicktime')) {
+      $format = 'mov';
+    }
+    elseif (str_contains($mime_type, 'webm')) {
+      $format = 'webm';
+    }
+    elseif (str_contains($mime_type, 'pdf')) {
+      $format = 'pdf';
+    }
+    
+    // Handle different attachment sources
+    if (isset($attachment['uri'])) {
+      // S3 URI or file path
+      if (str_starts_with($attachment['uri'], 's3://')) {
+        // S3 URI - use directly
+        return $this->formatS3Content($type, $format, $attachment['uri'], $attachment['name'] ?? NULL);
+      }
+      else {
+        // Local file - convert to base64
+        $file_contents = file_get_contents($attachment['uri']);
+        if ($file_contents !== FALSE) {
+          $base64 = base64_encode($file_contents);
+          return $this->formatBase64Content($type, $format, $base64, $attachment['name'] ?? NULL);
+        }
+      }
+    }
+    elseif (isset($attachment['data']) || isset($attachment['base64'])) {
+      // Base64 encoded data
+      $base64 = $attachment['base64'] ?? $attachment['data'];
+      return $this->formatBase64Content($type, $format, $base64, $attachment['name'] ?? NULL);
+    }
+    
+    // Fallback to empty text block
+    return ['text' => ''];
+  }
+
+  /**
+   * Format base64 content block.
+   */
+  protected function formatBase64Content(string $type, string $format, string $base64, ?string $name = NULL): array {
+    if ($type === 'image') {
+      return [
+        'image' => [
+          'format' => $format,
+          'source' => ['bytes' => $base64],
+        ],
+      ];
+    }
+    elseif ($type === 'video') {
+      return [
+        'video' => [
+          'format' => $format,
+          'source' => ['bytes' => $base64],
+        ],
+      ];
+    }
+    elseif ($type === 'document') {
+      return [
+        'document' => [
+          'format' => $format,
+          'name' => $name ?? 'document.' . $format,
+          'source' => ['bytes' => $base64],
+        ],
+      ];
+    }
+    
+    return ['text' => ''];
+  }
+
+  /**
+   * Format S3 URI content block.
+   */
+  protected function formatS3Content(string $type, string $format, string $uri, ?string $name = NULL): array {
+    if ($type === 'image') {
+      return [
+        'image' => [
+          'format' => $format,
+          'source' => [
+            's3Location' => ['uri' => $uri],
+          ],
+        ],
+      ];
+    }
+    elseif ($type === 'video') {
+      return [
+        'video' => [
+          'format' => $format,
+          'source' => [
+            's3Location' => ['uri' => $uri],
+          ],
+        ],
+      ];
+    }
+    elseif ($type === 'document') {
+      return [
+        'document' => [
+          'format' => $format,
+          'name' => $name ?? 'document.' . $format,
+          'source' => [
+            's3Location' => ['uri' => $uri],
+          ],
+        ],
+      ];
+    }
+    
+    return ['text' => ''];
+  }
+
+  /**
+   * Convert Drupal ToolsInput to Quant Cloud API format.
+   *
+   * @param \Drupal\ai\OperationType\Chat\ToolsInput $tools_input
+   *   Drupal tools input.
+   *
+   * @return array
+   *   API-formatted tools.
+   */
+  protected function formatToolsForApi($tools_input): array {
+    $api_tools = [];
+    
+    foreach ($tools_input->getFunctions() as $function) {
+      $api_tools[] = [
+        'toolSpec' => [
+          'name' => $function->getName(),
+          'description' => $function->getDescription(),
+          'inputSchema' => [
+            'json' => $function->getInputSchema(),
+          ],
+        ],
+      ];
+    }
+    
+    return $api_tools;
   }
 
 }

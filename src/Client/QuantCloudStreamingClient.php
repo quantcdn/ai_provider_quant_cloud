@@ -21,7 +21,7 @@ class QuantCloudStreamingClient extends QuantCloudClient {
    * @param callable $callback
    *   Callback function to handle each chunk.
    * @param array $options
-   *   Additional options.
+   *   Additional options (responseFormat, toolConfig, systemPrompt, etc.).
    *
    * @return array
    *   Final response data.
@@ -36,6 +36,21 @@ class QuantCloudStreamingClient extends QuantCloudClient {
       'temperature' => $options['temperature'] ?? $config->get('model.temperature') ?? 0.7,
       'maxTokens' => $options['maxTokens'] ?? $config->get('model.max_tokens') ?? 1000,
     ];
+    
+    // Add structured output (JSON Schema) if provided
+    if (isset($options['responseFormat'])) {
+      $data['responseFormat'] = $options['responseFormat'];
+    }
+    
+    // Add function calling (tools) if provided
+    if (isset($options['toolConfig'])) {
+      $data['toolConfig'] = $options['toolConfig'];
+    }
+    
+    // Add system prompt if provided
+    if (isset($options['systemPrompt'])) {
+      $data['systemPrompt'] = $options['systemPrompt'];
+    }
     
     $request_options = [
       'headers' => array_merge($this->getHeaders(), [
