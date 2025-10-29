@@ -265,16 +265,22 @@ class QuantCloudClient {
    * Note: Embeddings may not be available through the dashboard API yet.
    * This is a placeholder for future implementation.
    */
-  public function embeddings(array $texts, array $options = []): array {
+  public function embeddings(string $text, string $model_id, array $options = []): array {
     $config = $this->getConfig();
     
     $data = [
-      'input' => $texts,
-      'dimensions' => $options['dimensions'] ?? $config->get('embeddings.dimensions') ?? 1024,
-      'normalize' => $options['normalize'] ?? $config->get('embeddings.normalize') ?? TRUE,
+      'input' => $text,
+      'modelId' => $model_id,
     ];
     
-    // TODO: Confirm dashboard API endpoint for embeddings
+    // Optional: dimensions and normalize if API supports them
+    if (isset($options['dimensions'])) {
+      $data['dimensions'] = $options['dimensions'];
+    }
+    if (isset($options['normalize'])) {
+      $data['normalize'] = $options['normalize'];
+    }
+    
     return $this->post('embeddings', $data);
   }
 

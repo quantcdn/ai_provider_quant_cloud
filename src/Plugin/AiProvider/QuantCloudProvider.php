@@ -8,11 +8,13 @@ use Drupal\ai\OperationType\Chat\ChatInput;
 use Drupal\ai\OperationType\Chat\ChatInterface;
 use Drupal\ai\OperationType\Chat\ChatMessage;
 use Drupal\ai\OperationType\Chat\ChatOutput;
+use Drupal\ai\OperationType\Chat\Tools\ToolsFunctionOutput;
 use Drupal\ai\OperationType\Embeddings\EmbeddingsInput;
 use Drupal\ai\OperationType\Embeddings\EmbeddingsInterface;
 use Drupal\ai\OperationType\Embeddings\EmbeddingsOutput;
 use Drupal\ai_provider_quant_cloud\Client\QuantCloudClient;
 use Drupal\ai_provider_quant_cloud\Client\QuantCloudStreamingClient;
+use Drupal\ai_provider_quant_cloud\QuantCloudChatMessageIterator;
 use Drupal\Core\Config\ImmutableConfig;
 use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
@@ -53,6 +55,13 @@ class QuantCloudProvider extends AiProviderClientBase implements
   protected $modelsService;
 
   /**
+   * The logger.
+   *
+   * @var \Psr\Log\LoggerInterface
+   */
+  protected $logger;
+
+  /**
    * {@inheritdoc}
    */
   public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
@@ -60,6 +69,7 @@ class QuantCloudProvider extends AiProviderClientBase implements
     $instance->client = $container->get('ai_provider_quant_cloud.client');
     $instance->streamingClient = $container->get('ai_provider_quant_cloud.streaming_client');
     $instance->modelsService = $container->get('ai_provider_quant_cloud.models');
+    $instance->logger = $container->get('logger.factory')->get('ai_provider_quant_cloud');
     return $instance;
   }
 
@@ -120,22 +130,51 @@ class QuantCloudProvider extends AiProviderClientBase implements
    */
   public function getConfiguredModels(?string $operation_type = NULL, $capabilities = []): array {
     // Fetch models dynamically from the API via ModelsService
-    if ($operation_type) {
-      return $this->modelsService->getModelsForOperation($operation_type);
-    }
-    
-    // Return all models if no operation type specified
-    // However, filter chat models only by default to avoid showing embedding models everywhere
     try {
-      // Default to chat models if no operation type specified
-      // This prevents embedding models from showing up in chat interfaces
-      $api_models = $this->modelsService->getModels('chat');
+      // Log what's being requested (convert enums to strings)
+      if (!empty($capabilities)) {
+        $cap_strings = array_map(function($cap) {
+          return $cap instanceof \Drupal\ai\Enum\AiModelCapability ? $cap->value : (string)$cap;
+        }, $capabilities);
+        $this->logger->info('🔍 Getting models with capabilities: @caps', [
+          '@caps' => implode(', ', $cap_strings),
+        ]);
+      }
+      
+      // Get models for the operation type (defaults to 'chat' if not specified)
+      $feature = $operation_type ?: 'chat';
+      $api_models = $this->modelsService->getModels($feature);
       
       $models = [];
       foreach ($api_models as $model) {
         $model_id = $model['id'] ?? NULL;
         if (!$model_id) {
           continue;
+        }
+        
+        // Filter by capabilities if specified
+        if (!empty($capabilities)) {
+          $model_capabilities = $model['capabilities'] ?? [];
+          
+          // Check if model supports all required capabilities
+          $supports_all = TRUE;
+          foreach ($capabilities as $capability) {
+            // Convert enum to string value if needed
+            $capability_string = $capability instanceof \Drupal\ai\Enum\AiModelCapability ? $capability->value : (string)$capability;
+            
+            // Map Drupal capability names to our API capability flags
+            $capability_flag = $this->mapCapabilityFlag($capability_string);
+            
+            if ($capability_flag && empty($model_capabilities[$capability_flag])) {
+              $supports_all = FALSE;
+              break;
+            }
+          }
+          
+          // Skip this model if it doesn't support required capabilities
+          if (!$supports_all) {
+            continue;
+          }
         }
         
         // Drupal expects simple string labels for form dropdowns
@@ -151,6 +190,34 @@ class QuantCloudProvider extends AiProviderClientBase implements
       // The provider won't be usable until configuration is complete
       return [];
     }
+  }
+
+  /**
+   * Map Drupal capability names to API capability flags.
+   *
+   * @param string $capability
+   *   Drupal capability name (from AiModelCapability enum).
+   *
+   * @return string|null
+   *   API capability flag, or NULL if not mapped.
+   */
+  protected function mapCapabilityFlag(string $capability): ?string {
+    $mapping = [
+      // Function calling / Tools
+      'chat_tools' => 'supportsTools',
+      'chat_combined_tools_and_structured_response' => 'supportsTools',
+      
+      // Structured output / JSON
+      'chat_json_output' => 'supportsStructuredOutput',
+      'chat_structured_response' => 'supportsStructuredOutput',
+      
+      // Vision / Multimodal
+      'chat_with_image_vision' => 'supportsVision',
+      'chat_with_video' => 'supportsMultimodal',
+      'chat_with_audio' => 'supportsMultimodal',
+    ];
+    
+    return $mapping[$capability] ?? NULL;
   }
 
   /**
@@ -222,55 +289,68 @@ class QuantCloudProvider extends AiProviderClientBase implements
       $options['systemPrompt'] = $input->getSystemRole();
     }
     
-    try {
-      // Check if streaming is requested via tags
-      $use_streaming = in_array('streaming', $tags) || in_array('stream', $tags);
-      
-      if ($use_streaming) {
-        // Streaming via SSE - collect all chunks
-        $full_content = '';
-        $this->streamingClient->chatStream(
-          $messages,
-          $model_id,
-          function($delta, $is_complete) use (&$full_content) {
-            $full_content .= $delta;
-          },
-          $options
-        );
+      try {
+        // Check if streaming is requested (set by base class from UI checkbox)
+        $use_streaming = $this->streamed ?? FALSE;
         
-        $response_data = [
-          'role' => 'assistant',
-          'content' => $full_content,
-        ];
-        $result = [];
-      }
-      else {
-        // Buffered (default) - best for forms and batch processing
-        $result = $this->client->chat($messages, $model_id, $options);
-        $response_data = $result['response'] ?? [];
-      }
-      
-      $content = $response_data['content'] ?? '';
-      $role = $response_data['role'] ?? 'assistant';
-      
-      // Create ChatMessage for the response
-      $message = new ChatMessage($role, $content);
-      
-      // Check if response includes tool use
-      if (isset($response_data['toolUse'])) {
-        $tool_use = $response_data['toolUse'];
+        if ($use_streaming) {
+          // Streaming via SSE - return iterator for real-time streaming
+          $stream = $this->streamingClient->chatStreamRaw($messages, $model_id, $options);
+          
+          // Create streaming iterator (like AWS Bedrock provider does)
+          $message = QuantCloudChatMessageIterator::create($stream, $this->logger);
+          
+          // Return ChatOutput with the iterator as the message
+          // The iterator will be consumed by AI Explorer for real-time display
+          return new ChatOutput($message, [], NULL);
+        }
+        else {
+          // Buffered (default) - best for forms and batch processing
+          $response_data = $this->client->chat($messages, $model_id, $options);
         
-        // Add tools to the message
-        $message->setTools([
-          [
-            'id' => $tool_use['toolUseId'],
-            'name' => $tool_use['name'],
-            'arguments' => $tool_use['input'],
-          ],
-        ]);
+        // Handle Lambda response format:
+        // { "response": { "content": "...", "role": "assistant", "toolUse": {...} }, "usage": {...} }
+        if (isset($response_data['response'])) {
+          // Standard nested format
+          $message_data = $response_data['response'];
+          $content = $message_data['content'] ?? '';
+          $role = $message_data['role'] ?? 'assistant';
+          $tool_use_data = $message_data['toolUse'] ?? NULL;
+        }
+        else {
+          // Flat format (legacy fallback)
+          $content = $response_data['text'] ?? $response_data['content'] ?? '';
+          $role = 'assistant';
+          $tool_use_data = $response_data['toolUse'] ?? NULL;
+        }
+        
+        // Create ChatMessage for the response
+        $message = new ChatMessage($role, $content);
+        
+        // Check if response includes tool use
+        if ($tool_use_data) {
+          $tool_use = $tool_use_data;
+          
+          // Create ToolsFunctionOutput objects (like Bedrock does)
+          $tools = [];
+          if ($input instanceof ChatInput && method_exists($input, 'getChatTools') && $input->getChatTools()) {
+            $function = $input->getChatTools()->getFunctionByName($tool_use['name']);
+            if ($function) {
+              $tools[] = new ToolsFunctionOutput(
+                $function,
+                $tool_use['toolUseId'],
+                $tool_use['input']
+              );
+            }
+          }
+          
+          if (!empty($tools)) {
+            $message->setTools($tools);
+          }
+        }
+        
+        return new ChatOutput($message, $response_data, NULL);
       }
-      
-      return new ChatOutput($message, $result, NULL);
       
     }
     catch (\Exception $e) {
@@ -282,20 +362,25 @@ class QuantCloudProvider extends AiProviderClientBase implements
    * {@inheritdoc}
    */
   public function embeddings(string|EmbeddingsInput $input, string $model_id, array $tags = []): EmbeddingsOutput {
-    // Normalize input to EmbeddingsInput
-    if (is_string($input)) {
-      $input = new EmbeddingsInput([$input]);
+    // Normalize input - extract text from EmbeddingsInput
+    if ($input instanceof EmbeddingsInput) {
+      $text = $input->getPrompt();
+    }
+    else {
+      $text = $input;
     }
     
     try {
-      $result = $this->client->embeddings($input->getTexts());
+      // Call API with single text string
+      $result = $this->client->embeddings($text, $model_id);
       
-      $embeddings = [];
-      foreach ($result['embeddings'] ?? [] as $embedding_data) {
-        $embeddings[] = $embedding_data['embedding'];
-      }
+      // Extract embedding vector from response
+      // API returns: { "embeddings": [...], "model": "...", "usage": {...} }
+      $embedding = $result['embeddings'] ?? [];
       
-      return new EmbeddingsOutput($embeddings, NULL, []);
+      // EmbeddingsOutput expects array of embeddings (even for single input)
+      // Our API returns the vector directly, so wrap it
+      return new EmbeddingsOutput([$embedding], $result, []);
       
     }
     catch (\Exception $e) {
@@ -310,6 +395,16 @@ class QuantCloudProvider extends AiProviderClientBase implements
     // Store authentication for later use by the client
     // The authentication is passed to the HTTP client via headers
     $this->configuration['authentication'] = $authentication;
+  }
+
+  /**
+   * Sets whether to use streaming.
+   *
+   * @param bool $streamed
+   *   TRUE to use streaming, FALSE otherwise.
+   */
+  public function setStreamed(bool $streamed): void {
+    $this->streamed = $streamed;
   }
 
   /**
@@ -590,17 +685,28 @@ class QuantCloudProvider extends AiProviderClientBase implements
    *   API-formatted tools.
    */
   protected function formatToolsForApi($tools_input): array {
+    // Use renderToolsArray() like AWS Bedrock provider does
+    $tools = $tools_input->renderToolsArray();
     $api_tools = [];
     
-    foreach ($tools_input->getFunctions() as $function) {
+    foreach ($tools as $tool) {
+      $tool_spec = $tool['function'];
+      
+      // Map 'parameters' to 'inputSchema'
+      if (isset($tool['function']['parameters'])) {
+        $tool_spec['inputSchema']['json'] = $tool['function']['parameters'];
+      }
+      else {
+        $tool_spec['inputSchema']['json'] = [
+          'type' => 'object',
+        ];
+      }
+      
+      // Remove 'parameters' as we've moved it to inputSchema
+      unset($tool_spec['parameters']);
+      
       $api_tools[] = [
-        'toolSpec' => [
-          'name' => $function->getName(),
-          'description' => $function->getDescription(),
-          'inputSchema' => [
-            'json' => $function->getInputSchema(),
-          ],
-        ],
+        'toolSpec' => $tool_spec,
       ];
     }
     
