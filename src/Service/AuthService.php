@@ -118,9 +118,6 @@ class AuthService {
         
         // API returns array directly: [{"name":"quant","machine_name":"quant"}]
         if (is_array($data) && !empty($data)) {
-          $this->logger->info('Successfully fetched @count organizations', [
-            '@count' => count($data),
-          ]);
           return $data;
         }
       }
@@ -236,7 +233,6 @@ class AuthService {
       $data = json_decode($body, TRUE);
       
       if (isset($data['access_token'])) {
-        $this->logger->info('Successfully exchanged OAuth code for access token');
         return $data;
       }
       
@@ -285,7 +281,6 @@ class AuthService {
       $data = json_decode($body, TRUE);
       
       if (isset($data['access_token'])) {
-        $this->logger->info('Successfully refreshed access token');
         return $data;
       }
       

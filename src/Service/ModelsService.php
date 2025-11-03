@@ -89,11 +89,6 @@ class ModelsService {
         time() + self::CACHE_LIFETIME
       );
       
-      $this->logger->info('Fetched @count models from Quant Cloud API (feature: @feature)', [
-        '@count' => count($models),
-        '@feature' => $feature ?? 'all',
-      ]);
-      
       return $models;
       
     }
@@ -130,10 +125,6 @@ class ModelsService {
     
     // If not found in list, return NULL
     // The Dashboard API doesn't have a single-model endpoint yet
-    $this->logger->debug('Model @model not found in cached list', [
-      '@model' => $model_id,
-    ]);
-    
     return NULL;
   }
 
@@ -246,8 +237,6 @@ class ModelsService {
       'ai_provider_quant_cloud:models:vision',
       'ai_provider_quant_cloud:models:image_generation',
     ]);
-    
-    $this->logger->info('Cleared Quant Cloud models cache');
   }
 
 }

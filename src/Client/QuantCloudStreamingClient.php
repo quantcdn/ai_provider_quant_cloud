@@ -60,12 +60,7 @@ class QuantCloudStreamingClient extends QuantCloudClient {
     ];
     
     try {
-      $this->logger->info('🌐 HTTP POST to streaming endpoint: @url', ['@url' => $url]);
-      
       $response = $this->httpClient->post($url, $request_options);
-      $status_code = $response->getStatusCode();
-      
-      $this->logger->info('📡 HTTP Response: @status - Returning raw stream', ['@status' => $status_code]);
       
       // Return the raw stream for the iterator to consume
       return $response->getBody();
@@ -134,39 +129,22 @@ class QuantCloudStreamingClient extends QuantCloudClient {
     ];
     
     try {
-      $this->logger->info('🌐 HTTP POST to streaming endpoint: @url', ['@url' => $url]);
-      
       $response = $this->httpClient->post($url, $request_options);
-      $status_code = $response->getStatusCode();
-      
-      $this->logger->info('📡 HTTP Response: @status', ['@status' => $status_code]);
-      
       $body = $response->getBody();
       
       $full_content = '';
       $final_data = NULL;
-      $line_count = 0;
       
       // Read SSE stream
       while (!$body->eof()) {
         $line = $this->readLine($body);
-        $line_count++;
-        
-        if ($line_count <= 3) {
-          $this->logger->info('📝 SSE Line @num: "@line"', [
-            '@num' => $line_count,
-            '@line' => substr($line, 0, 100) . (strlen($line) > 100 ? '...' : ''),
-          ]);
-        }
         
         // Parse SSE format
         if (strpos($line, 'data: ') === 0) {
           $json_data = json_decode(substr($line, 6), TRUE);
           
           if ($json_data === NULL) {
-            $this->logger->warning('⚠️ Failed to decode JSON from SSE line: @line', [
-              '@line' => substr($line, 0, 200),
-            ]);
+            $this->logger->warning('Failed to decode SSE JSON data');
             continue;
           }
           
@@ -176,17 +154,11 @@ class QuantCloudStreamingClient extends QuantCloudClient {
           }
           
           if ($json_data['complete'] ?? FALSE) {
-            $this->logger->info('🏁 Stream complete signal received');
             $final_data = $json_data;
             break;
           }
         }
       }
-      
-      $this->logger->info('📊 Stream finished - Lines read: @lines, Content length: @length', [
-        '@lines' => $line_count,
-        '@length' => strlen($full_content),
-      ]);
       
       return $final_data ?? [
         'response' => ['role' => 'assistant', 'content' => $full_content],

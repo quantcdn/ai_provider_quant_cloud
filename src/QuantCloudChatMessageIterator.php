@@ -49,37 +49,18 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
       }
       
       public function getIterator(): \Generator {
-        $line_count = 0;
-        $chunk_count = 0;
-        
-        $this->logger->info('🌊 Starting to parse SSE stream');
-        
         while (!$this->stream->eof()) {
           $line = $this->readLine();
-          $line_count++;
-          
-          if ($line_count <= 3) {
-            $this->logger->info('📝 SSE Line @num: "@line"', [
-              '@num' => $line_count,
-              '@line' => substr($line, 0, 100) . (strlen($line) > 100 ? '...' : ''),
-            ]);
-          }
           
           if (strpos($line, 'data: ') === 0) {
             $json_data = json_decode(substr($line, 6), TRUE);
             
             if ($json_data === NULL) {
-              $this->logger->warning('⚠️  Failed to decode JSON');
+              $this->logger->warning('Failed to decode SSE JSON data');
               continue;
             }
             
             if (isset($json_data['delta'])) {
-              $chunk_count++;
-              
-              if ($chunk_count <= 5) {
-                $this->logger->info('📦 Yielding chunk @num', ['@num' => $chunk_count]);
-              }
-              
               yield [
                 'delta' => $json_data['delta'],
                 'role' => $json_data['role'] ?? 'assistant',
@@ -88,16 +69,10 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
             }
             
             if ($json_data['complete'] ?? FALSE) {
-              $this->logger->info('🏁 Stream complete - chunks: @count', ['@count' => $chunk_count]);
               break;
             }
           }
         }
-        
-        $this->logger->info('✅ Stream finished - Lines: @lines, Chunks: @chunks', [
-          '@lines' => $line_count,
-          '@chunks' => $chunk_count,
-        ]);
       }
       
       private function readLine(): string {
@@ -114,7 +89,6 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
     $instance = new static($wrapper);
     $instance->stream = $stream;
     $instance->logger = $logger;
-    $logger->info('🌊 QuantCloudChatMessageIterator created');
     return $instance;
   }
 
@@ -122,30 +96,13 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
    * {@inheritdoc}
    */
   public function getIterator(): \Generator {
-    $this->logger->info('🔄 getIterator() called - starting to iterate over parsed stream');
-    
-    $message_count = 0;
     foreach ($this->iterator as $data) {
-      $message_count++;
-      
-      if ($message_count <= 3) {
-        $this->logger->info('🔄 Creating StreamedChatMessage @num: role=@role, delta="@delta"', [
-          '@num' => $message_count,
-          '@role' => $data['role'] ?? 'assistant',
-          '@delta' => substr($data['delta'] ?? '', 0, 50),
-        ]);
-      }
-      
       yield new StreamedChatMessage(
         $data['role'] ?? 'assistant',
         $data['delta'] ?? '',
         $data['usage'] ?? []
       );
     }
-    
-    $this->logger->info('✅ getIterator() finished - yielded @count messages', [
-      '@count' => $message_count,
-    ]);
   }
 
 }
