@@ -12,7 +12,12 @@ A provider module is a **connector** between Drupal and external AI services. It
 
 **This module provides:**
 - ✅ Chat completions (multi-turn conversations)
+- ✅ Streaming responses (real-time chat)
+- ✅ Function calling / Tool execution (with auto-execute support)
 - ✅ Embeddings generation (for semantic search)
+- ✅ Text-to-image generation (AWS Bedrock Nova Canvas)
+- ✅ Image-to-image transformations (variations, inpainting, outpainting, background removal)
+- ✅ Structured output (JSON Schema validation)
 - ✅ Dynamic model discovery from Quant Cloud API
 - ✅ OAuth2 authentication
 - ✅ Automatic request routing through Quant Cloud Dashboard
@@ -74,6 +79,22 @@ After saving, the module will:
 - Cache model information for 1 hour
 - Display connection status on the configuration page
 
+### 4. Advanced Configuration (Optional)
+
+Configure additional options in the "Advanced Settings" section:
+
+- **Enable Request/Response Logging**: Turn on detailed logging for debugging
+- **Streaming Timeout**: Adjust timeout for streaming responses (default: 60s)
+- **Image Generation Options**:
+  - Default resolution (512x512 to 2048x2048)
+  - Quality preset (standard/premium)
+  - Visual style (photorealistic, digital-art, illustration, etc.)
+  - Negative prompts for unwanted elements
+- **Model Parameters**:
+  - Temperature (0.0 - 1.0)
+  - Max tokens (1 - 4096)
+  - Top P sampling
+
 ## Usage
 
 ### Basic Chat Example
@@ -118,6 +139,27 @@ $response = $provider->chat($input, 'anthropic.claude-3-5-sonnet-20241022-v2:0')
 $text = $response->getNormalized()->getText();
 ```
 
+### Streaming Chat Example
+
+```php
+<?php
+
+use Drupal\ai\OperationType\Chat\ChatInput;
+use Drupal\ai\OperationType\Chat\ChatMessage;
+
+// Create chat input
+$messages = [new ChatMessage('user', 'Tell me a story about Drupal')];
+$input = new ChatInput($messages);
+
+// Stream the response
+$stream = $provider->streamedChat($input, 'anthropic.claude-3-5-sonnet-20241022-v2:0');
+
+// Iterate through chunks as they arrive
+foreach ($stream as $message) {
+  echo $message->getText(); // Print each chunk in real-time
+}
+```
+
 ### Embeddings Example
 
 ```php
@@ -146,19 +188,172 @@ $vectors = $response->getEmbeddings();
 // Returns: Array of 1024-dimensional vectors
 ```
 
+### Text-to-Image Example
+
+```php
+<?php
+
+use Drupal\ai\OperationType\TextToImage\TextToImageInput;
+
+// Generate an image
+$input = new TextToImageInput('A beautiful sunset over mountains');
+$response = $provider->textToImage($input, 'amazon.nova-canvas-v1:0');
+
+// Get generated images
+$images = $response->getImages();
+foreach ($images as $image) {
+  $file = $image->getFile(); // Drupal file entity
+  // Use $file->getFileUri() to get the file path
+}
+```
+
+### Image-to-Image Example
+
+```php
+<?php
+
+use Drupal\ai\OperationType\ImageToImage\ImageToImageInput;
+use Drupal\file_mdm\FileMetadataInterface;
+
+// Load source image
+$file = \Drupal::entityTypeManager()
+  ->getStorage('file')
+  ->load($fid);
+
+// Create image transformation input
+$input = new ImageToImageInput(
+  $file,
+  'Make this photo look like a watercolor painting',
+  'image_variation' // or 'inpainting', 'outpainting', 'background_removal'
+);
+
+$response = $provider->imageToImage($input, 'amazon.nova-canvas-v1:0');
+
+// Get transformed images
+$images = $response->getImages();
+```
+
+### Function Calling Example
+
+```php
+<?php
+
+use Drupal\ai\OperationType\Chat\ChatInput;
+use Drupal\ai\OperationType\Chat\ChatMessage;
+use Drupal\ai\OperationType\Chat\ToolsInput;
+use Drupal\ai\OperationType\Chat\Tools\ToolsFunctionInput;
+
+// Define a custom function/tool
+$get_weather = new ToolsFunctionInput(
+  'get_weather',
+  'Get current weather for a location',
+  [
+    'type' => 'object',
+    'properties' => [
+      'location' => [
+        'type' => 'string',
+        'description' => 'City name',
+      ],
+      'unit' => [
+        'type' => 'string',
+        'enum' => ['celsius', 'fahrenheit'],
+      ],
+    ],
+    'required' => ['location'],
+  ]
+);
+
+$tools = new ToolsInput([$get_weather]);
+
+// Ask a question that requires the tool
+$messages = [new ChatMessage('user', 'What is the weather like in Sydney?')];
+$input = new ChatInput($messages);
+$input->setChatTools($tools);
+
+$response = $provider->chat($input, 'anthropic.claude-3-5-sonnet-20241022-v2:0');
+
+// Check if AI wants to call a function
+if ($response->getNormalized()->getTools()) {
+  foreach ($response->getNormalized()->getTools() as $tool_call) {
+    $function_name = $tool_call->getName();
+    $arguments = $tool_call->getInput();
+    
+    // Execute your function
+    if ($function_name === 'get_weather') {
+      $weather_data = my_weather_api_call($arguments['location']);
+      
+      // Send result back to AI
+      $messages[] = new ChatMessage('assistant', '', $response->getNormalized()->getTools());
+      $messages[] = new ChatMessage('tool_result', json_encode($weather_data), [], ['tool_call_id' => $tool_call->getId()]);
+      
+      $input = new ChatInput($messages);
+      $input->setChatTools($tools);
+      $final_response = $provider->chat($input, 'anthropic.claude-3-5-sonnet-20241022-v2:0');
+      
+      echo $final_response->getNormalized()->getText();
+      // "The weather in Sydney is currently 22°C and sunny."
+    }
+  }
+}
+```
+
+### Structured Output Example
+
+```php
+<?php
+
+use Drupal\ai\OperationType\Chat\ChatInput;
+use Drupal\ai\OperationType\Chat\ChatMessage;
+
+// Define JSON Schema
+$schema = [
+  'type' => 'object',
+  'properties' => [
+    'name' => ['type' => 'string'],
+    'age' => ['type' => 'integer'],
+    'email' => ['type' => 'string', 'format' => 'email'],
+  ],
+  'required' => ['name', 'age'],
+];
+
+// Request structured output
+$messages = [new ChatMessage('user', 'Extract: John Doe, 35 years old, john@example.com')];
+$input = new ChatInput($messages);
+
+$response = $provider->chat(
+  $input,
+  'amazon.nova-pro-v1:0',
+  ['json_schema' => $schema]
+);
+
+// Parse JSON response
+$data = json_decode($response->getNormalized()->getText(), TRUE);
+// Returns: ['name' => 'John Doe', 'age' => 35, 'email' => 'john@example.com']
+```
+
 ## Available Models
 
+Models are dynamically fetched from the Quant Cloud API. Here are the commonly available models:
+
 ### Chat & Completion Models
-- `amazon.nova-lite-v1:0` - Fast and affordable
-- `amazon.nova-micro-v1:0` - Ultra-fast
-- `amazon.nova-pro-v1:0` - Advanced capabilities
-- `anthropic.claude-3-5-sonnet-20241022-v2:0` - Latest Claude
+- `amazon.nova-lite-v1:0` - Fast and affordable, great for most tasks
+- `amazon.nova-micro-v1:0` - Ultra-fast for simple queries
+- `amazon.nova-pro-v1:0` - Advanced capabilities, vision support
+- `anthropic.claude-3-5-sonnet-20241022-v2:0` - Latest Claude (recommended)
 - `anthropic.claude-3-5-sonnet-20240620-v1:0` - Claude 3.5
 - `anthropic.claude-3-sonnet-20240229-v1:0` - Claude 3
-- `anthropic.claude-3-haiku-20240307-v1:0` - Claude Haiku
+- `anthropic.claude-3-haiku-20240307-v1:0` - Claude Haiku (fast)
 
 ### Embeddings Models
 - `amazon.titan-embed-text-v2:0` - Text embeddings (256/512/1024 dimensions)
+- `cohere.embed-english-v3` - English text embeddings
+- `cohere.embed-multilingual-v3` - Multilingual embeddings
+
+### Image Generation Models
+- `amazon.nova-canvas-v1:0` - Text-to-image, image-to-image, inpainting, outpainting, background removal
+- `amazon.titan-image-generator-v2:0` - Alternative image generation model
+
+**Note:** Available models and features may vary by region and Quant Cloud plan. The module automatically fetches and displays available models for your account.
 
 ## Architecture
 
@@ -206,11 +401,41 @@ drush ev "print_r(\Drupal::service('plugin.manager.ai_provider')->getDefinitions
 - Try reconnecting with OAuth
 - Check Drupal logs: `drush watchdog:show --type=ai_provider_quant_cloud`
 
+### Image generation issues
+
+**"Image too large" errors:**
+- The module automatically resizes images to meet Nova Canvas limits (4MP max, 2048px sides)
+- If you see this error, ensure the Sharp PHP extension is installed: `composer require drupal/image_effects`
+
+**"No image models available":**
+- Verify your Quant Cloud plan includes Bedrock image generation
+- Check that `image_generation` feature is enabled in your organization
+- Clear model cache: Go to Configuration > AI > Quant Cloud AI and click "Clear Model Cache"
+
+**Image quality issues:**
+- Try using `premium` quality in configuration for better results
+- Adjust the `similarity_strength` parameter (0.2-1.0) for image variations
+- Use more detailed prompts for better control
+
+### Streaming not working
+
+- Ensure your PHP version supports Server-Sent Events (SSE)
+- Check that your web server doesn't buffer responses (disable mod_deflate compression for SSE endpoints)
+- Increase `streaming_timeout` in advanced settings if timeouts occur
+- Enable logging to see streaming debug information
+
 ### Module configuration not saving
 
 - Clear cache: `drush cr`
 - Check file permissions
 - Verify Key module is enabled
+
+### Performance optimization
+
+- **Model caching**: Models are cached for 1 hour - adjust in code if needed
+- **Logging**: Disable request/response logging in production
+- **Streaming**: Use streaming for long responses to improve perceived performance
+- **Embeddings batch**: Process embeddings in batches for better throughput
 
 ## Development
 
