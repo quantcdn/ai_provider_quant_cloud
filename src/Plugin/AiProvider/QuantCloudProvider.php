@@ -12,6 +12,13 @@ use Drupal\ai\OperationType\Chat\Tools\ToolsFunctionOutput;
 use Drupal\ai\OperationType\Embeddings\EmbeddingsInput;
 use Drupal\ai\OperationType\Embeddings\EmbeddingsInterface;
 use Drupal\ai\OperationType\Embeddings\EmbeddingsOutput;
+use Drupal\ai\OperationType\TextToImage\TextToImageInput;
+use Drupal\ai\OperationType\TextToImage\TextToImageInterface;
+use Drupal\ai\OperationType\TextToImage\TextToImageOutput;
+use Drupal\ai\OperationType\ImageToImage\ImageToImageInput;
+use Drupal\ai\OperationType\ImageToImage\ImageToImageInterface;
+use Drupal\ai\OperationType\ImageToImage\ImageToImageOutput;
+use Drupal\ai\OperationType\GenericType\ImageFile;
 use Drupal\ai_provider_quant_cloud\Client\QuantCloudClient;
 use Drupal\ai_provider_quant_cloud\Client\QuantCloudStreamingClient;
 use Drupal\ai_provider_quant_cloud\QuantCloudChatMessageIterator;
@@ -31,7 +38,9 @@ use Symfony\Component\Yaml\Yaml;
 class QuantCloudProvider extends AiProviderClientBase implements 
   ContainerFactoryPluginInterface,
   ChatInterface,
-  EmbeddingsInterface {
+  EmbeddingsInterface,
+  TextToImageInterface,
+  ImageToImageInterface {
 
   /**
    * The Quant Cloud client.
@@ -122,6 +131,8 @@ class QuantCloudProvider extends AiProviderClientBase implements
     return [
       'chat',
       'embeddings',
+      'text_to_image',
+      'image_to_image',
     ];
   }
 
@@ -131,18 +142,15 @@ class QuantCloudProvider extends AiProviderClientBase implements
   public function getConfiguredModels(?string $operation_type = NULL, $capabilities = []): array {
     // Fetch models dynamically from the API via ModelsService
     try {
-      // Log what's being requested (convert enums to strings)
-      if (!empty($capabilities)) {
-        $cap_strings = array_map(function($cap) {
-          return $cap instanceof \Drupal\ai\Enum\AiModelCapability ? $cap->value : (string)$cap;
-        }, $capabilities);
-        $this->logger->info('🔍 Getting models with capabilities: @caps', [
-          '@caps' => implode(', ', $cap_strings),
-        ]);
-      }
-      
       // Get models for the operation type (defaults to 'chat' if not specified)
-      $feature = $operation_type ?: 'chat';
+      // Map Drupal operation types to API features
+      $feature_map = [
+        'chat' => 'chat',
+        'embeddings' => 'embeddings',
+        'text_to_image' => 'image_generation',
+        'image_to_image' => 'image_generation',
+      ];
+      $feature = $feature_map[$operation_type] ?? ($operation_type ?: 'chat');
       $api_models = $this->modelsService->getModels($feature);
       
       $models = [];
@@ -386,6 +394,460 @@ class QuantCloudProvider extends AiProviderClientBase implements
     catch (\Exception $e) {
       throw new \RuntimeException('Embeddings request failed: ' . $e->getMessage(), 0, $e);
     }
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function textToImage(string|TextToImageInput $input, string $model_id, array $tags = []): TextToImageOutput {
+    // Normalize input and extract images if provided
+    $prompt = '';
+    $source_images = [];
+    
+    if ($input instanceof TextToImageInput) {
+      $prompt = $input->getText();
+      // Check if input has images (for image-to-image operations)
+      if (method_exists($input, 'getImages') && !empty($input->getImages())) {
+        foreach ($input->getImages() as $image) {
+          // Convert Drupal ImageFile to base64
+          $source_images[] = base64_encode($image->getBinary());
+        }
+      }
+    }
+    else {
+      $prompt = $input;
+    }
+
+    try {
+      // Determine task type based on configuration and presence of source images
+      $task_type = $this->configuration['task_type'] ?? 'TEXT_IMAGE';
+      
+      // Auto-detect: if images provided but task type is TEXT_IMAGE, switch to IMAGE_VARIATION
+      if (!empty($source_images) && $task_type === 'TEXT_IMAGE') {
+        $task_type = 'IMAGE_VARIATION';
+      }
+
+      // Build image generation request for Nova Canvas
+      $payload = [
+        'modelId' => $model_id,
+        'taskType' => $task_type,
+        'imageGenerationConfig' => [],
+      ];
+
+      // Build task-specific parameters
+      switch ($task_type) {
+        case 'TEXT_IMAGE':
+          $payload['textToImageParams'] = [
+            'text' => $prompt,
+          ];
+          
+          // Add style if specified (Nova Canvas visual styles)
+          if (!empty($this->configuration['style'])) {
+            $payload['textToImageParams']['style'] = $this->configuration['style'];
+          }
+          
+          // Add negative prompt if specified (what NOT to include)
+          if (!empty($this->configuration['negativePrompt'])) {
+            $payload['textToImageParams']['negativeText'] = $this->configuration['negativePrompt'];
+          }
+          break;
+
+        case 'IMAGE_VARIATION':
+          if (empty($source_images)) {
+            throw new \InvalidArgumentException('IMAGE_VARIATION requires source image(s)');
+          }
+          
+          $payload['imageVariationParams'] = [
+            'images' => $source_images,
+            'text' => $prompt ?: 'Generate a variation of this image',
+          ];
+          
+          // Similarity strength (0.2-1.0, higher = more similar to original)
+          if (isset($this->configuration['similarity_strength'])) {
+            $payload['imageVariationParams']['similarityStrength'] = (float) $this->configuration['similarity_strength'];
+          }
+          break;
+
+        case 'INPAINTING':
+          if (empty($source_images)) {
+            throw new \InvalidArgumentException('INPAINTING requires source image and mask');
+          }
+          
+          $payload['inPaintingParams'] = [
+            'image' => $source_images[0],
+            'text' => $prompt ?: 'Fill the masked region',
+          ];
+          
+          // Mask image is typically the second image
+          if (isset($source_images[1])) {
+            $payload['inPaintingParams']['maskImage'] = $source_images[1];
+          }
+          break;
+
+        case 'OUTPAINTING':
+          if (empty($source_images)) {
+            throw new \InvalidArgumentException('OUTPAINTING requires source image');
+          }
+          
+          $payload['outPaintingParams'] = [
+            'image' => $source_images[0],
+            'text' => $prompt ?: 'Extend the image borders',
+          ];
+          
+          // Optional mask prompt for directional expansion
+          if (isset($this->configuration['mask_prompt'])) {
+            $payload['outPaintingParams']['maskPrompt'] = $this->configuration['mask_prompt'];
+          }
+          break;
+
+        case 'BACKGROUND_REMOVAL':
+          if (empty($source_images)) {
+            throw new \InvalidArgumentException('BACKGROUND_REMOVAL requires source image');
+          }
+          
+          $payload['backgroundRemovalParams'] = [
+            'image' => $source_images[0],
+          ];
+          break;
+
+        default:
+          throw new \InvalidArgumentException("Unsupported task type: {$task_type}");
+      }
+
+      // Add optional configuration from provider settings
+      if (isset($this->configuration['width']) && isset($this->configuration['height'])) {
+        $payload['imageGenerationConfig']['width'] = (int) $this->configuration['width'];
+        $payload['imageGenerationConfig']['height'] = (int) $this->configuration['height'];
+      }
+      elseif (isset($this->configuration['resolution'])) {
+        // Handle 'custom' resolution option
+        if ($this->configuration['resolution'] === 'custom') {
+          if (isset($this->configuration['custom_width']) && isset($this->configuration['custom_height'])) {
+            $payload['imageGenerationConfig']['width'] = (int) $this->configuration['custom_width'];
+            $payload['imageGenerationConfig']['height'] = (int) $this->configuration['custom_height'];
+          }
+        }
+        else {
+          // Support resolution format like "1024x1024"
+          $parts = explode('x', $this->configuration['resolution']);
+          if (count($parts) === 2) {
+            $payload['imageGenerationConfig']['width'] = (int) $parts[0];
+            $payload['imageGenerationConfig']['height'] = (int) $parts[1];
+          }
+        }
+      }
+
+      if (isset($this->configuration['quality'])) {
+        $payload['imageGenerationConfig']['quality'] = $this->configuration['quality'];
+      }
+
+      if (isset($this->configuration['numberOfImages'])) {
+        $payload['imageGenerationConfig']['numberOfImages'] = (int) $this->configuration['numberOfImages'];
+      }
+
+      if (isset($this->configuration['cfgScale'])) {
+        $payload['imageGenerationConfig']['cfgScale'] = (float) $this->configuration['cfgScale'];
+      }
+
+      if (isset($this->configuration['seed']) && $this->configuration['seed'] !== null) {
+        $payload['imageGenerationConfig']['seed'] = (int) $this->configuration['seed'];
+      }
+
+      // Nova Canvas requires specific regions (us-east-1, ap-northeast-1, eu-west-1)
+      // Default to us-east-1 if not specified
+      if (isset($this->configuration['nova_canvas_region'])) {
+        $payload['region'] = $this->configuration['nova_canvas_region'];
+      }
+
+      // Call image generation API with extended timeout (image generation can take 10-30s)
+      $response = $this->client->post('image-generation', $payload, [
+        'timeout' => 60,        // 60s timeout for image generation (handles premium + multiple images)
+        'connect_timeout' => 10,
+      ]);
+
+      if (empty($response['images'])) {
+        throw new \RuntimeException('No images returned from API');
+      }
+
+      // API returns compressed thumbnail data URLs (data:image/jpeg;base64,...)
+      // Extract actual base64 data for Drupal
+      $images = [];
+      foreach ($response['images'] as $index => $data_url) {
+        // Check if it's a data URL or raw base64
+        if (str_starts_with($data_url, 'data:image/')) {
+          // Extract base64 from data URL: data:image/jpeg;base64,<data>
+          $parts = explode(',', $data_url, 2);
+          $base64_data = $parts[1] ?? $data_url;
+        }
+        else {
+          // Already raw base64
+          $base64_data = $data_url;
+        }
+        
+        $image_data = base64_decode($base64_data);
+        
+        // Determine format from data URL MIME type or default to JPEG (thumbnails are JPEG)
+        $format = 'jpeg';
+        if (str_contains($data_url, 'image/png')) {
+          $format = 'png';
+        }
+        
+        $images[] = new ImageFile(
+          $image_data, 
+          "image/{$format}", 
+          "generated-{$index}.{$format}"
+        );
+      }
+
+      return new TextToImageOutput($images, $response, []);
+    }
+    catch (\Exception $e) {
+      throw new \RuntimeException('Image generation failed: ' . $e->getMessage(), 0, $e);
+    }
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function imageToImage(ImageToImageInput|array|string $input, string $model_id, array $tags = []): ImageToImageOutput {
+    // Normalize input and extract images
+    $prompt = '';
+    $source_images = [];
+    
+    if ($input instanceof ImageToImageInput) {
+      // ImageToImageInput might use getPrompt() instead of getText()
+      $prompt = '';
+      if (method_exists($input, 'getPrompt')) {
+        $prompt = $input->getPrompt() ?? '';
+      }
+      elseif (method_exists($input, 'getText')) {
+        $prompt = $input->getText() ?? '';
+      }
+      
+      // Get the source image using getImageFile()
+      if (method_exists($input, 'getImageFile') && $input->getImageFile()) {
+        $image = $input->getImageFile();
+        $source_images[] = base64_encode($image->getBinary());
+      }
+      
+      // Get the mask image if present (for INPAINTING)
+      $mask_image = NULL;
+      if (method_exists($input, 'getMask') && $input->getMask()) {
+        $mask = $input->getMask();
+        $mask_image = base64_encode($mask->getBinary());
+      }
+    }
+    elseif (is_array($input)) {
+      // Handle array input format (from forms/AJAX)
+      $prompt = $input['prompt'] ?? $input['text'] ?? '';
+      
+      // Extract images from array
+      if (isset($input['images']) && is_array($input['images'])) {
+        foreach ($input['images'] as $image) {
+          if ($image instanceof ImageFile) {
+            $source_images[] = base64_encode($image->getBinary());
+          }
+          elseif (is_string($image)) {
+            // Already base64 encoded
+            $source_images[] = $image;
+          }
+        }
+      }
+    }
+    else {
+      // String input is just the prompt
+      $prompt = $input;
+    }
+
+    if (empty($source_images)) {
+      throw new \InvalidArgumentException('Image-to-image requires at least one source image');
+    }
+
+    try {
+      // Determine task type from configuration (default to IMAGE_VARIATION)
+      $task_type = $this->configuration['task_type'] ?? 'IMAGE_VARIATION';
+
+      // Build image generation request for Nova Canvas
+      $payload = [
+        'modelId' => $model_id,
+        'taskType' => $task_type,
+        'imageGenerationConfig' => [],
+      ];
+
+      // Build task-specific parameters
+      switch ($task_type) {
+        case 'IMAGE_VARIATION':
+          $payload['imageVariationParams'] = [
+            'images' => $source_images,
+            'text' => $prompt ?: 'Generate a variation of this image',
+          ];
+          
+          // Similarity strength (0.2-1.0, higher = more similar to original)
+          if (isset($this->configuration['similarity_strength'])) {
+            $payload['imageVariationParams']['similarityStrength'] = (float) $this->configuration['similarity_strength'];
+          }
+          break;
+
+        case 'INPAINTING':
+          $payload['inPaintingParams'] = [
+            'image' => $source_images[0],
+            'text' => $prompt ?: 'Fill the masked region',
+          ];
+          
+          // Use mask from input if available, otherwise try second image
+          if (isset($mask_image)) {
+            $payload['inPaintingParams']['maskImage'] = $mask_image;
+          }
+          elseif (isset($source_images[1])) {
+            $payload['inPaintingParams']['maskImage'] = $source_images[1];
+          }
+          break;
+
+        case 'OUTPAINTING':
+          $payload['outPaintingParams'] = [
+            'image' => $source_images[0],
+            'text' => $prompt ?: 'Extend the image borders',
+          ];
+          
+          // Optional mask prompt for directional expansion
+          if (isset($this->configuration['mask_prompt'])) {
+            $payload['outPaintingParams']['maskPrompt'] = $this->configuration['mask_prompt'];
+          }
+          break;
+
+        case 'BACKGROUND_REMOVAL':
+          $payload['backgroundRemovalParams'] = [
+            'image' => $source_images[0],
+          ];
+          break;
+
+        default:
+          throw new \InvalidArgumentException("Unsupported task type for image-to-image: {$task_type}");
+      }
+
+      // Add optional configuration from provider settings
+      if (isset($this->configuration['width']) && isset($this->configuration['height'])) {
+        $payload['imageGenerationConfig']['width'] = (int) $this->configuration['width'];
+        $payload['imageGenerationConfig']['height'] = (int) $this->configuration['height'];
+      }
+      elseif (isset($this->configuration['resolution'])) {
+        // Handle 'custom' resolution option
+        if ($this->configuration['resolution'] === 'custom') {
+          if (isset($this->configuration['custom_width']) && isset($this->configuration['custom_height'])) {
+            $payload['imageGenerationConfig']['width'] = (int) $this->configuration['custom_width'];
+            $payload['imageGenerationConfig']['height'] = (int) $this->configuration['custom_height'];
+          }
+        }
+        else {
+          // Support resolution format like "1024x1024"
+          $parts = explode('x', $this->configuration['resolution']);
+          if (count($parts) === 2) {
+            $payload['imageGenerationConfig']['width'] = (int) $parts[0];
+            $payload['imageGenerationConfig']['height'] = (int) $parts[1];
+          }
+        }
+      }
+
+      if (isset($this->configuration['quality'])) {
+        $payload['imageGenerationConfig']['quality'] = $this->configuration['quality'];
+      }
+
+      if (isset($this->configuration['numberOfImages'])) {
+        $payload['imageGenerationConfig']['numberOfImages'] = (int) $this->configuration['numberOfImages'];
+      }
+
+      if (isset($this->configuration['cfgScale'])) {
+        $payload['imageGenerationConfig']['cfgScale'] = (float) $this->configuration['cfgScale'];
+      }
+
+      if (isset($this->configuration['seed']) && $this->configuration['seed'] !== null) {
+        $payload['imageGenerationConfig']['seed'] = (int) $this->configuration['seed'];
+      }
+
+      // Nova Canvas requires specific regions (us-east-1, ap-northeast-1, eu-west-1)
+      if (isset($this->configuration['nova_canvas_region'])) {
+        $payload['region'] = $this->configuration['nova_canvas_region'];
+      }
+
+      // Call image generation API with extended timeout
+      $response = $this->client->post('image-generation', $payload, [
+        'timeout' => 60,        // 60s timeout for image generation
+        'connect_timeout' => 10,
+      ]);
+
+      if (empty($response['images'])) {
+        throw new \RuntimeException('No images returned from API');
+      }
+
+      // API returns compressed thumbnail data URLs (data:image/jpeg;base64,...)
+      // Extract actual base64 data for Drupal
+      $images = [];
+      foreach ($response['images'] as $index => $data_url) {
+        // Check if it's a data URL or raw base64
+        if (str_starts_with($data_url, 'data:image/')) {
+          // Extract base64 from data URL: data:image/jpeg;base64,<data>
+          $parts = explode(',', $data_url, 2);
+          $base64_data = $parts[1] ?? $data_url;
+        }
+        else {
+          $base64_data = $data_url;
+        }
+        
+        $image_data = base64_decode($base64_data);
+        
+        // Determine format (JPEG for thumbnails, PNG for originals)
+        $format = str_contains($data_url, 'image/png') ? 'png' : 'jpeg';
+        
+        $images[] = new ImageFile(
+          $image_data, 
+          "image/{$format}", 
+          "variation-{$index}.{$format}"
+        );
+      }
+
+      return new ImageToImageOutput($images, $response, []);
+    }
+    catch (\Exception $e) {
+      throw new \RuntimeException('Image-to-image generation failed: ' . $e->getMessage(), 0, $e);
+    }
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function requiresImageToImageMask(string $model_id): bool {
+    // Get the configured task type
+    $task_type = $this->configuration['task_type'] ?? 'IMAGE_VARIATION';
+    
+    // INPAINTING requires a mask image
+    return $task_type === 'INPAINTING';
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function hasImageToImageMask(string $model_id): bool {
+    // Nova Canvas supports mask-based operations (INPAINTING)
+    return TRUE;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function requiresImageToImagePrompt(string $model_id): bool {
+    // Get the configured task type
+    $task_type = $this->configuration['task_type'] ?? 'IMAGE_VARIATION';
+    
+    // BACKGROUND_REMOVAL doesn't require a prompt, others do (or benefit from one)
+    return $task_type !== 'BACKGROUND_REMOVAL';
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function hasImageToImagePrompt(string $model_id): bool {
+    // Nova Canvas supports text prompts for all image-to-image operations
+    return TRUE;
   }
 
   /**

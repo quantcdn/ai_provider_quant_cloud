@@ -60,3 +60,282 @@ embeddings:
       default: true
       required: false
 
+text_to_image:
+  input:
+    description: 'Text prompt describing the image to generate.'
+    type: 'string'
+    default: 'A serene mountain landscape at sunset with vibrant colors'
+    required: true
+  authentication:
+    description: 'Quant Cloud API token.'
+    type: 'string'
+    default: ''
+    required: true
+  configuration:
+    task_type:
+      label: 'Task Type'
+      description: 'Image generation task type. Use TEXT_IMAGE for new images, IMAGE_VARIATION for variations of uploaded images.'
+      type: 'string'
+      default: 'TEXT_IMAGE'
+      required: false
+      constraints:
+        options:
+          - 'TEXT_IMAGE'
+          - 'IMAGE_VARIATION'
+          - 'INPAINTING'
+          - 'OUTPAINTING'
+          - 'BACKGROUND_REMOVAL'
+    similarity_strength:
+      label: 'Similarity Strength'
+      description: 'For IMAGE_VARIATION: How similar to the source image (0.2-1.0). Higher = more similar to original.'
+      type: 'float'
+      default: 0.7
+      required: false
+      constraints:
+        min: 0.2
+        max: 1.0
+        step: 0.1
+    quality:
+      label: 'Quality'
+      description: 'Image generation quality. Use "standard" for most cases, "premium" for highest quality.'
+      type: 'string'
+      default: 'standard'
+      required: false
+      constraints:
+        options:
+          - standard
+          - premium
+    resolution:
+      label: 'Resolution'
+      description: 'Image resolution (width x height). Select preset or use custom (320-4096px per side, divisible by 16, max 4,194,304 total pixels).'
+      type: 'string'
+      default: '1024x1024'
+      required: false
+      constraints:
+        options:
+          - '512x512'
+          - '640x640'
+          - '768x768'
+          - '1024x1024'
+          - '1280x1280'
+          - '1536x1536'
+          - '2048x2048'
+          - '720x1280'
+          - '864x1536'
+          - '1024x1792'
+          - '1280x720'
+          - '1536x864'
+          - '1792x1024'
+          - '2048x1024'
+          - '1024x2048'
+          - 'custom'
+    custom_width:
+      label: 'Custom Width'
+      description: 'Custom width in pixels (320-4096, divisible by 16). Only used when resolution is "custom".'
+      type: 'integer'
+      default: 1024
+      required: false
+      constraints:
+        min: 320
+        max: 4096
+        step: 16
+    custom_height:
+      label: 'Custom Height'
+      description: 'Custom height in pixels (320-4096, divisible by 16). Only used when resolution is "custom".'
+      type: 'integer'
+      default: 1024
+      required: false
+      constraints:
+        min: 320
+        max: 4096
+        step: 16
+    numberOfImages:
+      label: 'Number of Images'
+      description: 'How many images to generate (1-5).'
+      type: 'integer'
+      default: 1
+      required: false
+      constraints:
+        min: 1
+        max: 5
+    cfgScale:
+      label: 'CFG Scale'
+      description: 'How closely to follow the prompt (1.0-10.0). Higher values follow prompt more strictly.'
+      type: 'float'
+      default: 7.0
+      required: false
+      constraints:
+        min: 1.0
+        max: 10.0
+        step: 0.5
+    seed:
+      label: 'Seed'
+      description: 'Random seed for reproducible generation (optional).'
+      type: 'integer'
+      default: null
+      required: false
+      constraints:
+        min: 0
+        max: 2147483647
+    style:
+      label: 'Style'
+      description: 'Visual style for the generated image (optional).'
+      type: 'string'
+      default: null
+      required: false
+      constraints:
+        options:
+          - '3D_ANIMATED_FAMILY_FILM'
+          - 'DESIGN_SKETCH'
+          - 'FLAT_VECTOR_ILLUSTRATION'
+          - 'GRAPHIC_NOVEL_ILLUSTRATION'
+          - 'MAXIMALISM'
+          - 'MIDCENTURY_RETRO'
+          - 'PHOTOREALISM'
+          - 'SOFT_DIGITAL_PAINTING'
+    negativePrompt:
+      label: 'Negative Prompt'
+      description: 'What NOT to include in the image (e.g., "blurry, low quality, distorted").'
+      type: 'string'
+      default: null
+      required: false
+    nova_canvas_region:
+      label: 'AWS Region'
+      description: 'AWS region for Nova Canvas (us-east-1, ap-northeast-1, or eu-west-1).'
+      type: 'string'
+      default: 'us-east-1'
+      required: false
+      constraints:
+        options:
+          - 'us-east-1'
+          - 'ap-northeast-1'
+          - 'eu-west-1'
+
+image_to_image:
+  input:
+    description: 'Text prompt to guide the image transformation (optional for some task types).'
+    type: 'string'
+    default: 'Generate a variation of this image'
+    required: false
+  authentication:
+    description: 'Quant Cloud API token.'
+    type: 'string'
+    default: ''
+    required: true
+  configuration:
+    task_type:
+      label: 'Task Type'
+      description: 'Image transformation type.'
+      type: 'string'
+      default: 'IMAGE_VARIATION'
+      required: false
+      constraints:
+        options:
+          - 'IMAGE_VARIATION'
+          - 'INPAINTING'
+          - 'OUTPAINTING'
+          - 'BACKGROUND_REMOVAL'
+    similarity_strength:
+      label: 'Similarity Strength'
+      description: 'For IMAGE_VARIATION: How similar to the source image (0.2-1.0). Higher = more similar to original.'
+      type: 'float'
+      default: 0.7
+      required: false
+      constraints:
+        min: 0.2
+        max: 1.0
+        step: 0.1
+    quality:
+      label: 'Quality'
+      description: 'Image generation quality. Use "standard" for most cases, "premium" for highest quality.'
+      type: 'string'
+      default: 'standard'
+      required: false
+      constraints:
+        options:
+          - standard
+          - premium
+    resolution:
+      label: 'Resolution'
+      description: 'Image resolution (width x height). Select preset or use custom (320-4096px per side, divisible by 16, max 4,194,304 total pixels).'
+      type: 'string'
+      default: '1024x1024'
+      required: false
+      constraints:
+        options:
+          - '512x512'
+          - '640x640'
+          - '768x768'
+          - '1024x1024'
+          - '1280x1280'
+          - '1536x1536'
+          - '2048x2048'
+          - '720x1280'
+          - '864x1536'
+          - '1024x1792'
+          - '1280x720'
+          - '1536x864'
+          - '1792x1024'
+          - '2048x1024'
+          - '1024x2048'
+          - 'custom'
+    custom_width:
+      label: 'Custom Width'
+      description: 'Custom width in pixels (320-4096, divisible by 16). Only used when resolution is "custom".'
+      type: 'integer'
+      default: 1024
+      required: false
+      constraints:
+        min: 320
+        max: 4096
+        step: 16
+    custom_height:
+      label: 'Custom Height'
+      description: 'Custom height in pixels (320-4096, divisible by 16). Only used when resolution is "custom".'
+      type: 'integer'
+      default: 1024
+      required: false
+      constraints:
+        min: 320
+        max: 4096
+        step: 16
+    numberOfImages:
+      label: 'Number of Images'
+      description: 'How many images to generate (1-5).'
+      type: 'integer'
+      default: 1
+      required: false
+      constraints:
+        min: 1
+        max: 5
+    cfgScale:
+      label: 'CFG Scale'
+      description: 'How closely to follow the prompt (1.0-10.0). Higher values follow prompt more strictly.'
+      type: 'float'
+      default: 7.0
+      required: false
+      constraints:
+        min: 1.0
+        max: 10.0
+        step: 0.5
+    seed:
+      label: 'Seed'
+      description: 'Random seed for reproducible generation (optional).'
+      type: 'integer'
+      default: null
+      required: false
+      constraints:
+        min: 0
+        max: 2147483647
+    nova_canvas_region:
+      label: 'AWS Region'
+      description: 'AWS region for Nova Canvas (us-east-1, ap-northeast-1, or eu-west-1).'
+      type: 'string'
+      default: 'us-east-1'
+      required: false
+      constraints:
+        options:
+          - 'us-east-1'
+          - 'ap-northeast-1'
+          - 'eu-west-1'
+

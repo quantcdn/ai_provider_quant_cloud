@@ -141,7 +141,7 @@ class ModelsService {
    * Get models filtered by operation type (for Drupal AI compatibility).
    *
    * @param string $operation_type
-   *   Operation type (chat, embeddings).
+   *   Operation type (chat, embeddings, text_to_image).
    *
    * @return array
    *   Associative array of model_id => model_label (simple string).
@@ -151,6 +151,8 @@ class ModelsService {
     $feature_map = [
       'chat' => 'chat',
       'embeddings' => 'embeddings',
+      'text_to_image' => 'image_generation',
+      'image_to_image' => 'image_generation',
     ];
     
     $feature = $feature_map[$operation_type] ?? NULL;
@@ -209,6 +211,15 @@ class ModelsService {
         'maxOutputTokens' => 0,
         'supportedFeatures' => ['embeddings'],
       ],
+      [
+        'id' => 'amazon.nova-canvas-v1:0',
+        'name' => 'Amazon Nova Canvas',
+        'provider' => 'Amazon',
+        'description' => 'Text to image generation',
+        'contextWindow' => 0,
+        'maxOutputTokens' => 0,
+        'supportedFeatures' => ['image_generation'],
+      ],
     ];
     
     // Filter by feature if specified
@@ -233,6 +244,7 @@ class ModelsService {
       'ai_provider_quant_cloud:models:chat',
       'ai_provider_quant_cloud:models:embeddings',
       'ai_provider_quant_cloud:models:vision',
+      'ai_provider_quant_cloud:models:image_generation',
     ]);
     
     $this->logger->info('Cleared Quant Cloud models cache');

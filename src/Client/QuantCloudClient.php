@@ -155,6 +155,8 @@ class QuantCloudClient {
    *   API path relative to /ai/ (e.g., 'chat', 'chat/stream').
    * @param array $data
    *   Request body data.
+   * @param array $request_options
+   *   Optional request options (timeout, connect_timeout, etc.).
    *
    * @return array
    *   Response data.
@@ -162,14 +164,15 @@ class QuantCloudClient {
    * @throws \RuntimeException
    *   If request fails.
    */
-  public function post(string $path, array $data): array {
+  public function post(string $path, array $data, array $request_options = []): array {
     $config = $this->getConfig();
     $url = $this->buildApiUrl($path);
     
     $options = [
       'headers' => $this->getHeaders(),
       'json' => $data,
-      'timeout' => $config->get('advanced.timeout') ?? 30,
+      'timeout' => $request_options['timeout'] ?? $config->get('advanced.timeout') ?? 30,
+      'connect_timeout' => $request_options['connect_timeout'] ?? 10,
     ];
     
     try {
