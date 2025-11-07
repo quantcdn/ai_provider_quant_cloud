@@ -129,47 +129,49 @@ class OAuthController extends ControllerBase {
     // Create or update the key for access token
     $key_id = 'quant_cloud_oauth_access_token';
     
-    // Check if key exists
+    // Check if key exists and delete it (simpler than trying to update)
     $existing_key = $this->keyRepository->getKey($key_id);
-    
     if ($existing_key) {
-      // Update existing key
-      $existing_key->setKeyValue($access_token);
-      $existing_key->save();
+      $existing_key->delete();
     }
-    else {
-      // Create new key
-      $key = $this->entityTypeManager()->getStorage('key')->create([
-        'id' => $key_id,
-        'label' => 'Quant Cloud OAuth Access Token (Auto-generated)',
-        'key_type' => 'authentication',
-        'key_provider' => 'config',
-        'key_input' => 'text_field',
+    
+    // Create new key with proper configuration
+    $key = $this->entityTypeManager()->getStorage('key')->create([
+      'id' => $key_id,
+      'label' => 'Quant Cloud OAuth Access Token (Auto-generated)',
+      'description' => 'OAuth2 access token for Quant Cloud API',
+      'key_type' => 'authentication',
+      'key_provider' => 'config',
+      'key_input' => 'text_field',
+      'key_provider_settings' => [
         'key_value' => $access_token,
-      ]);
-      $key->save();
-    }
+      ],
+    ]);
+    $key->save();
     
     // Store refresh token separately if provided
     if ($refresh_token) {
       $refresh_key_id = 'quant_cloud_oauth_refresh_token';
-      $existing_refresh = $this->keyRepository->getKey($refresh_key_id);
       
+      // Delete existing refresh token if it exists
+      $existing_refresh = $this->keyRepository->getKey($refresh_key_id);
       if ($existing_refresh) {
-        $existing_refresh->setKeyValue($refresh_token);
-        $existing_refresh->save();
+        $existing_refresh->delete();
       }
-      else {
-        $refresh_key = $this->entityTypeManager()->getStorage('key')->create([
-          'id' => $refresh_key_id,
-          'label' => 'Quant Cloud OAuth Refresh Token (Auto-generated)',
-          'key_type' => 'authentication',
-          'key_provider' => 'config',
-          'key_input' => 'text_field',
+      
+      // Create new refresh token key
+      $refresh_key = $this->entityTypeManager()->getStorage('key')->create([
+        'id' => $refresh_key_id,
+        'label' => 'Quant Cloud OAuth Refresh Token (Auto-generated)',
+        'description' => 'OAuth2 refresh token for Quant Cloud API',
+        'key_type' => 'authentication',
+        'key_provider' => 'config',
+        'key_input' => 'text_field',
+        'key_provider_settings' => [
           'key_value' => $refresh_token,
-        ]);
-        $refresh_key->save();
-      }
+        ],
+      ]);
+      $refresh_key->save();
       
       // Store expiry time
       $this->state()->set('quant_cloud_oauth_expires_at', time() + $expires_in);

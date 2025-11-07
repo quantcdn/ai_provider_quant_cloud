@@ -227,7 +227,15 @@ class AuthService {
           // Note: Public client, no client_secret required (like CLI)
         ],
         'timeout' => 30,
+        'http_errors' => FALSE,
       ]);
+      
+      if ($response->getStatusCode() !== 200) {
+        $this->logger->error('Token exchange failed with status @status', [
+          '@status' => $response->getStatusCode(),
+        ]);
+        return NULL;
+      }
       
       $body = $response->getBody()->getContents();
       $data = json_decode($body, TRUE);
