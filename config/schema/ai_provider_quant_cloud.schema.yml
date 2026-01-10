@@ -51,3 +51,4 @@ ai_provider.plugin.quant_cloud:
         organization_id:
           type: string
 
+

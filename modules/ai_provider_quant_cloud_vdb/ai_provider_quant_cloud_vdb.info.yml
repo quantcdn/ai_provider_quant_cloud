@@ -1,0 +1,10 @@
+name: 'Quant Cloud VectorDB Provider'
+description: 'VectorDB provider for Quant Cloud, enabling semantic search with AI Search module.'
+type: module
+package: 'AI'
+core_version_requirement: ^10.3 || ^11
+
+dependencies:
+  - ai_provider_quant_cloud:ai_provider_quant_cloud
+  - ai:ai_search
+  - search_api:search_api

@@ -15,6 +15,7 @@ A provider module is a **connector** between Drupal and external AI services. It
 - ✅ Streaming responses (real-time chat)
 - ✅ Function calling / Tool execution (with auto-execute support)
 - ✅ Embeddings generation (for semantic search)
+- ✅ VectorDB provider (semantic search with AI Search module)
 - ✅ Text-to-image generation (AWS Bedrock Nova Canvas)
 - ✅ Image-to-image transformations (variations, inpainting, outpainting, background removal)
 - ✅ Structured output (JSON Schema validation)
@@ -354,6 +355,106 @@ Models are dynamically fetched from the Quant Cloud API. Here are the commonly a
 - `amazon.titan-image-generator-v2:0` - Alternative image generation model
 
 **Note:** Available models and features may vary by region and Quant Cloud plan. The module automatically fetches and displays available models for your account.
+
+## VectorDB Support
+
+The module provides two levels of VectorDB integration:
+
+### 1. Direct VectorDB Client (Main Module)
+
+The main module includes `QuantCloudVectorDbClient` for direct API access to Quant Cloud's vector database. This works **without** Search API and enables:
+- Creating/managing collections
+- Uploading documents with automatic embedding
+- Text-based semantic search
+- Vector-based search with pre-computed embeddings
+
+### 2. Search API Integration (Submodule)
+
+For full [Drupal AI Search](https://www.drupal.org/project/ai_search) integration, enable the included submodule:
+
+```bash
+# Install dependencies
+composer require drupal/search_api
+drush en -y search_api ai_search
+
+# Enable the VDB submodule
+drush en -y ai_provider_quant_cloud_vdb
+```
+
+Then create a Search API server at **Configuration > Search and metadata > Search API**:
+- Backend: "AI Search"
+- Vector Database provider: "Quant Cloud VectorDB"
+
+Configure the VDB provider:
+- Enter database name and collection name
+- Choose similarity metric
+- Create a Search API index and start indexing content
+
+### VectorDB Usage Examples
+
+#### Using the VectorDB Client (Main Module)
+
+```php
+<?php
+
+// Get the VectorDB client service (no Search API needed)
+$client = \Drupal::service('ai_provider_quant_cloud.vectordb_client');
+
+// Create a collection
+$response = $client->createCollection(
+  'my-knowledge-base',
+  'Documentation and guides',        // description
+  'amazon.titan-embed-text-v2:0',    // embedding model
+  1024                                // dimensions
+);
+$collection_id = $response['collection']['collectionId'];
+
+// Upload documents (embeddings generated automatically)
+$documents = [
+  [
+    'content' => 'Drupal is a powerful CMS for government sites...',
+    'metadata' => ['title' => 'About Drupal', 'url' => '/about'],
+  ],
+  [
+    'content' => 'Install modules using composer require...',
+    'metadata' => ['title' => 'Installing Modules', 'url' => '/install'],
+  ],
+];
+$client->uploadDocuments($collection_id, $documents);
+
+// Text-based search (server generates embeddings)
+$results = $client->queryByText(
+  $collection_id,
+  'How do I install modules?',
+  10,  // limit
+  0.7  // threshold
+);
+
+foreach ($results['results'] as $result) {
+  echo "Score: {$result['similarity']} - {$result['content']}\n";
+}
+
+// Vector-based search (with pre-computed embedding)
+$ai_provider = \Drupal::service('ai.provider')->createInstance('quant_cloud');
+$embedding = $ai_provider->embeddings('install modules', 'amazon.titan-embed-text-v2:0');
+$vector = $embedding->getNormalized()[0];
+
+$results = $client->queryByVector($collection_id, $vector, 10, 0.7);
+
+// Manage collections
+$collections = $client->listCollections();
+$details = $client->getCollection($collection_id);
+$client->deleteCollection($collection_id);
+```
+
+### Supported Embedding Models for VectorDB
+
+| Model | Dimensions | Best For |
+|-------|------------|----------|
+| `amazon.titan-embed-text-v2:0` | 1024 | General purpose (recommended) |
+| `amazon.titan-embed-text-v1` | 1536 | Legacy compatibility |
+| `cohere.embed-english-v3` | 1024 | English-only content |
+| `cohere.embed-multilingual-v3` | 1024 | Multi-language content |
 
 ## Architecture
 

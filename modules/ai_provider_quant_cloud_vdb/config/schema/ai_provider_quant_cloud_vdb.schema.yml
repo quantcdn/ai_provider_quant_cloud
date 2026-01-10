@@ -1,0 +1,16 @@
+ai_vdb_provider.plugin.quant_cloud_vdb:
+  type: mapping
+  label: 'Quant Cloud VectorDB Provider Configuration'
+  mapping:
+    database_settings:
+      type: mapping
+      mapping:
+        database_name:
+          type: string
+          label: 'Database Name'
+        collection:
+          type: string
+          label: 'Collection Name'
+        metric:
+          type: string
+          label: 'Similarity Metric'
