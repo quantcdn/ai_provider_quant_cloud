@@ -1040,18 +1040,18 @@ class QuantCloudProvider extends AiProviderClientBase implements
           continue;
         }
 
-        // Check if message has attachments (multimodal content)
-        // Note: Drupal AI module stores attachments in various ways depending on version
-        $has_attachments = method_exists($message, 'getAttachments') &&
-                          !empty($message->getAttachments());
+        // Check if message has images (multimodal content)
+        // Drupal AI module uses getImages() returning ImageFile objects
+        $images = method_exists($message, 'getImages') ? $message->getImages() : [];
+        $has_images = !empty($images);
 
-        if ($has_attachments) {
+        if ($has_images) {
           // Build multimodal content array
           $content_blocks = [];
 
-          // Add attachments first (images, videos, documents)
-          foreach ($message->getAttachments() as $attachment) {
-            $content_blocks[] = $this->formatAttachment($attachment);
+          // Add images first
+          foreach ($images as $image) {
+            $content_blocks[] = $this->formatImageFile($image);
           }
 
           // Add text prompt last
@@ -1078,11 +1078,45 @@ class QuantCloudProvider extends AiProviderClientBase implements
   }
 
   /**
+   * Format an ImageFile for multimodal API request.
+   *
+   * @param \Drupal\ai\OperationType\GenericType\ImageFile $image
+   *   The ImageFile object from Drupal AI.
+   *
+   * @return array
+   *   Formatted content block for the API.
+   */
+  protected function formatImageFile($image): array {
+    $mime_type = $image->getMimeType();
+    $binary = $image->getBinary();
+
+    // Extract format from MIME type
+    $format = 'jpeg'; // default
+    if (str_contains($mime_type, 'png')) {
+      $format = 'png';
+    }
+    elseif (str_contains($mime_type, 'gif')) {
+      $format = 'gif';
+    }
+    elseif (str_contains($mime_type, 'webp')) {
+      $format = 'webp';
+    }
+
+    // Return Bedrock/Claude image format
+    return [
+      'image' => [
+        'format' => $format,
+        'source' => ['bytes' => base64_encode($binary)],
+      ],
+    ];
+  }
+
+  /**
    * Format an attachment for multimodal API request.
-   * 
+   *
    * @param mixed $attachment
    *   The attachment object from Drupal AI.
-   * 
+   *
    * @return array
    *   Formatted content block for the API.
    */
