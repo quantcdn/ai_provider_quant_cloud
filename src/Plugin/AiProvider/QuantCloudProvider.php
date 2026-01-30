@@ -336,7 +336,7 @@ class QuantCloudProvider extends AiProviderClientBase implements
         $message = new ChatMessage($role, $content);
         
         // Check if response includes tool use
-        if ($tool_use_data) {
+        if ($tool_use_data && !empty($tool_use_data['name'])) {
           $tool_use = $tool_use_data;
           
           // Create ToolsFunctionOutput objects (like Bedrock does)
@@ -346,8 +346,8 @@ class QuantCloudProvider extends AiProviderClientBase implements
             if ($function) {
               $tools[] = new ToolsFunctionOutput(
                 $function,
-                $tool_use['toolUseId'],
-                $tool_use['input']
+                $tool_use['toolUseId'] ?? uniqid('tool_'),
+                $tool_use['input'] ?? []
               );
             }
           }
