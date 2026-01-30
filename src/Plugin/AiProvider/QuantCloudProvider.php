@@ -4,6 +4,7 @@ namespace Drupal\ai_provider_quant_cloud\Plugin\AiProvider;
 
 use Drupal\ai\Attribute\AiProvider;
 use Drupal\ai\Base\AiProviderClientBase;
+use Drupal\Component\Serialization\Json;
 use Drupal\ai\OperationType\Chat\ChatInput;
 use Drupal\ai\OperationType\Chat\ChatInterface;
 use Drupal\ai\OperationType\Chat\ChatMessage;
@@ -292,29 +293,34 @@ class QuantCloudProvider extends AiProviderClientBase implements
       ];
     }
     
-    // Check for system prompt
-    if (method_exists($input, 'getSystemRole') && $input->getSystemRole()) {
+    // Check for system prompt - use chatSystemRole from base class (like OpenAI provider)
+    // This is set via setChatSystemRole() by agents before calling chat()
+    if ($this->chatSystemRole) {
+      $options['systemPrompt'] = $this->chatSystemRole;
+    }
+    // Fallback: also check input object (for backward compatibility)
+    elseif (method_exists($input, 'getSystemRole') && $input->getSystemRole()) {
       $options['systemPrompt'] = $input->getSystemRole();
     }
-    
-      try {
-        // Check if streaming is requested (set by base class from UI checkbox)
-        $use_streaming = $this->streamed ?? FALSE;
-        
-        if ($use_streaming) {
-          // Streaming via SSE - return iterator for real-time streaming
-          $stream = $this->streamingClient->chatStreamRaw($messages, $model_id, $options);
-          
-          // Create streaming iterator (like AWS Bedrock provider does)
-          $message = QuantCloudChatMessageIterator::create($stream, $this->logger);
-          
-          // Return ChatOutput with the iterator as the message
-          // The iterator will be consumed by AI Explorer for real-time display
-          return new ChatOutput($message, [], NULL);
-        }
-        else {
-          // Buffered (default) - best for forms and batch processing
-          $response_data = $this->client->chat($messages, $model_id, $options);
+
+    try {
+      // Check if streaming is requested (set by base class from UI checkbox)
+      $use_streaming = $this->streamed ?? FALSE;
+
+      if ($use_streaming) {
+        // Streaming via SSE - return iterator for real-time streaming
+        $stream = $this->streamingClient->chatStreamRaw($messages, $model_id, $options);
+
+        // Create streaming iterator (like AWS Bedrock provider does)
+        $message = QuantCloudChatMessageIterator::create($stream, $this->logger);
+
+        // Return ChatOutput with the iterator as the message
+        // The iterator will be consumed by AI Explorer for real-time display
+        return new ChatOutput($message, [], NULL);
+      }
+      else {
+        // Buffered (default) - best for forms and batch processing
+        $response_data = $this->client->chat($messages, $model_id, $options);
         
         // Handle Lambda response format:
         // { "response": { "content": "...", "role": "assistant", "toolUse": {...} }, "usage": {...} }
@@ -334,24 +340,38 @@ class QuantCloudProvider extends AiProviderClientBase implements
         
         // Create ChatMessage for the response
         $message = new ChatMessage($role, $content);
-        
+
         // Check if response includes tool use
-        if ($tool_use_data && !empty($tool_use_data['name'])) {
-          $tool_use = $tool_use_data;
-          
-          // Create ToolsFunctionOutput objects (like Bedrock does)
-          $tools = [];
-          if ($input instanceof ChatInput && method_exists($input, 'getChatTools') && $input->getChatTools()) {
-            $function = $input->getChatTools()->getFunctionByName($tool_use['name']);
-            if ($function) {
-              $tools[] = new ToolsFunctionOutput(
-                $function,
-                $tool_use['toolUseId'] ?? uniqid('tool_'),
-                $tool_use['input'] ?? []
-              );
+        // toolUse can be a single object or an array of tool requests
+        if ($tool_use_data) {
+          // Normalize to array - handle both single tool and array of tools
+          $tool_use_array = [];
+          if (isset($tool_use_data['name'])) {
+            // Single tool object
+            $tool_use_array = [$tool_use_data];
+          }
+          elseif (is_array($tool_use_data) && !empty($tool_use_data)) {
+            // Array of tool objects (check first element has 'name')
+            if (isset($tool_use_data[0]['name'])) {
+              $tool_use_array = $tool_use_data;
             }
           }
-          
+
+          // Create ToolsFunctionOutput objects (like Bedrock does)
+          $tools = [];
+          if (!empty($tool_use_array) && $input instanceof ChatInput && method_exists($input, 'getChatTools') && $input->getChatTools()) {
+            foreach ($tool_use_array as $tool_use) {
+              $function = $input->getChatTools()->getFunctionByName($tool_use['name']);
+              if ($function) {
+                $tools[] = new ToolsFunctionOutput(
+                  $function,
+                  $tool_use['toolUseId'] ?? uniqid('tool_'),
+                  $tool_use['input'] ?? []
+                );
+              }
+            }
+          }
+
           if (!empty($tools)) {
             $message->setTools($tools);
           }
@@ -954,50 +974,106 @@ class QuantCloudProvider extends AiProviderClientBase implements
 
   /**
    * Format chat messages for API.
-   * 
+   *
    * Supports multimodal content (images, videos, documents) for Nova models.
+   * Converts Drupal AI's tool_result role to Bedrock's user role with toolResult content block.
+   * Formats assistant messages with tool calls to include toolUse content blocks.
    */
   protected function formatMessages(array $messages): array {
     $formatted = [];
-    
+
     foreach ($messages as $message) {
       if ($message instanceof ChatMessage) {
+        $role = $message->getRole();
         $content = $message->getText();
-        
+
+        // Handle assistant messages with tool calls first
+        // Include toolUse blocks in content array for conversation continuity
+        // (Must check before tool_result since assistant messages should not be converted)
+        $tools = $message->getTools();
+        if ($role === 'assistant' && !empty($tools)) {
+          $content_blocks = [];
+
+          // Add text content first if present
+          if ($content) {
+            $content_blocks[] = ['text' => $content];
+          }
+
+          // Add tool use blocks - use getRenderedTools() like AWS Bedrock provider
+          $tool_uses = $message->getRenderedTools();
+          foreach ($tool_uses as $tool_use) {
+            $content_blocks[] = [
+              'toolUse' => [
+                'toolUseId' => $tool_use['id'],
+                'name' => $tool_use['function']['name'],
+                // AWS wants the structured object, not the string
+                'input' => Json::decode($tool_use['function']['arguments']),
+              ],
+            ];
+          }
+
+          $formatted[] = [
+            'role' => 'assistant',
+            'content' => $content_blocks,
+          ];
+          continue;
+        }
+
+        // Handle tool_result messages - convert to Bedrock format
+        // Drupal AI uses role "tool" or has toolsId set, Bedrock expects role "user" with toolResult content block
+        // Match AWS Bedrock provider pattern: (role === 'tool' || getToolsId()) && role !== 'assistant'
+        if (($role === 'tool' || $role === 'tool_result' || $message->getToolsId()) && $role !== 'assistant') {
+          $formatted[] = [
+            'role' => 'user',
+            'content' => [
+              [
+                'toolResult' => [
+                  'toolUseId' => $message->getToolsId(),
+                  'content' => [
+                    // Need to set text to tool result, if empty use placeholder
+                    ['text' => $content !== '' ? $content : 'Tool Result'],
+                  ],
+                ],
+              ],
+            ],
+          ];
+          continue;
+        }
+
         // Check if message has attachments (multimodal content)
         // Note: Drupal AI module stores attachments in various ways depending on version
-        $has_attachments = method_exists($message, 'getAttachments') && 
+        $has_attachments = method_exists($message, 'getAttachments') &&
                           !empty($message->getAttachments());
-        
+
         if ($has_attachments) {
           // Build multimodal content array
           $content_blocks = [];
-          
+
           // Add attachments first (images, videos, documents)
           foreach ($message->getAttachments() as $attachment) {
             $content_blocks[] = $this->formatAttachment($attachment);
           }
-          
+
           // Add text prompt last
           if ($message->getText()) {
             $content_blocks[] = ['text' => $message->getText()];
           }
-          
+
           $formatted[] = [
-            'role' => $message->getRole(),
+            'role' => $role,
             'content' => $content_blocks,
           ];
         }
         else {
           // Simple text message
           $formatted[] = [
-            'role' => $message->getRole(),
+            'role' => $role,
             'content' => $content,
           ];
         }
       }
     }
-    
+
     return $formatted;
   }
 

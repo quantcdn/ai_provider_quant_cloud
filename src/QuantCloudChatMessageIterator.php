@@ -51,15 +51,16 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
       public function getIterator(): \Generator {
         while (!$this->stream->eof()) {
           $line = $this->readLine();
-          
+
           if (strpos($line, 'data: ') === 0) {
-            $json_data = json_decode(substr($line, 6), TRUE);
-            
+            $raw_json = substr($line, 6);
+            $json_data = json_decode($raw_json, TRUE);
+
             if ($json_data === NULL) {
               $this->logger->warning('Failed to decode SSE JSON data');
               continue;
             }
-            
+
             if (isset($json_data['delta'])) {
               yield [
                 'delta' => $json_data['delta'],
@@ -67,7 +68,31 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
                 'usage' => $json_data['usage'] ?? [],
               ];
             }
-            
+
+            // Handle tool use events - yield tool data for the iterator consumer
+            if (isset($json_data['toolUse'])) {
+              yield [
+                'delta' => '',
+                'role' => $json_data['role'] ?? 'assistant',
+                'usage' => $json_data['usage'] ?? [],
+                'toolUse' => $json_data['toolUse'],
+                'stopReason' => $json_data['stopReason'] ?? NULL,
+                'content' => $json_data['content'] ?? '',
+              ];
+            }
+
+            // Also handle tool_request events from done event
+            if (isset($json_data['response']['toolUse'])) {
+              yield [
+                'delta' => '',
+                'role' => 'assistant',
+                'usage' => $json_data['usage'] ?? [],
+                'toolUse' => $json_data['response']['toolUse'],
+                'stopReason' => $json_data['stopReason'] ?? NULL,
+                'content' => $json_data['response']['content'] ?? '',
+              ];
+            }
+
             if ($json_data['complete'] ?? FALSE) {
               break;
             }
