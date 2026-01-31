@@ -5,10 +5,13 @@ namespace Drupal\ai_provider_quant_cloud_vdb\Plugin\VdbProvider;
 use Drupal\ai\Attribute\AiVdbProvider;
 use Drupal\ai\Base\AiVdbProviderClientBase;
 use Drupal\ai\Enum\VdbSimilarityMetrics;
+use Drupal\ai\Exception\AiUnsafePromptException;
 use Drupal\ai_provider_quant_cloud\Client\QuantCloudVectorDbClient;
+use Drupal\ai_search\EmbeddingStrategyInterface;
 use Drupal\Core\Config\ImmutableConfig;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
+use Drupal\search_api\IndexInterface;
 use Drupal\search_api\Query\QueryInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
@@ -45,6 +48,7 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
       $container->get('messenger'),
     );
     $instance->vdbClient = $container->get('ai_provider_quant_cloud.vectordb_client');
+
     return $instance;
   }
 
@@ -108,6 +112,231 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
       ]);
       return [];
     }
+  }
+
+  /**
+   * {@inheritdoc}
+   *
+   * Override to batch document uploads for efficiency.
+   * Supports server-side embedding mode to bypass slow sequential Drupal embeddings.
+   */
+  public function indexItems(
+    array $configuration,
+    IndexInterface $index,
+    array $items,
+    EmbeddingStrategyInterface $embedding_strategy,
+  ): array {
+    $successfulItemIds = [];
+    $documentsToUpload = [];
+    $itemBase = [
+      'metadata' => [
+        'server_id' => $index->getServerId(),
+        'index_id' => $index->id(),
+      ],
+    ];
+
+    // Check if server-side embeddings are enabled (bypasses slow Drupal embedding).
+    $serverSideEmbeddings = $configuration['database_settings']['server_side_embeddings'] ?? FALSE;
+
+    $this->getLogger('ai_provider_quant_cloud')->debug('indexItems called with @count items (server_side_embeddings: @sse)', [
+      '@count' => count($items),
+      '@sse' => $serverSideEmbeddings ? 'yes' : 'no',
+    ]);
+
+    // Initialize embedding strategy ONCE if using server-side embeddings.
+    // This sets up the converter, tokenizer, chunk sizes, etc.
+    if ($serverSideEmbeddings) {
+      $strategyConfig = $configuration['embedding_strategy_configuration'] ?? [];
+      $embedding_strategy->init(
+        $configuration['embeddings_engine'],
+        $configuration['chat_model'],
+        $strategyConfig
+      );
+    }
+
+    // Delete existing documents for these items before re-indexing.
+    $this->deleteIndexItems($configuration, $index, array_values(array_map(function ($item) {
+      return $item->getId();
+    }, $items)));
+
+    $collection_name = $configuration['database_settings']['collection'];
+    $collection_id = $this->resolveCollectionId($collection_name);
+
+    // Process all items and collect documents for batch upload.
+    foreach ($items as $item) {
+      $item_id = $item->getId();
+
+      if ($serverSideEmbeddings) {
+        // Server-side mode: use Drupal's content extraction, but skip embedding generation.
+        // This uses Drupal's exact field processing (groupFieldData) for consistency.
+        $chunks = $this->extractAndChunkContent($item, $index, $configuration, $embedding_strategy);
+
+        foreach ($chunks as $idx => $chunkText) {
+          $metadata = array_merge($itemBase['metadata'], [
+            'drupal_long_id' => $item_id . '_chunk_' . $idx,
+            'drupal_entity_id' => $item_id,
+          ]);
+
+          // No vector - Lambda will generate embeddings with parallel processing.
+          $documentsToUpload[] = [
+            'content' => $chunkText,
+            'metadata' => $metadata,
+          ];
+        }
+
+        $successfulItemIds[] = $item_id;
+      }
+      else {
+        // Standard mode: use Drupal's embedding strategy (sequential, slow).
+        try {
+          $embeddings = $embedding_strategy->getEmbedding(
+            $configuration['embeddings_engine'],
+            $configuration['chat_model'],
+            $configuration['embedding_strategy_configuration'],
+            $item->getFields(),
+            $item,
+            $index,
+          );
+        }
+        catch (AiUnsafePromptException $e) {
+          $this->getLogger('ai_provider_quant_cloud')->warning('Skipping item @id due to unsafe prompt: @message', [
+            '@id' => $item_id,
+            '@message' => $e->getMessage(),
+          ]);
+          continue;
+        }
+
+        $chunk_count = count($embeddings);
+        $this->getLogger('ai_provider_quant_cloud')->debug('Item @id generated @chunks chunks', [
+          '@id' => $item_id,
+          '@chunks' => $chunk_count,
+        ]);
+
+        foreach ($embeddings as $embedding) {
+          $this->validateRetrievedEmbedding($embedding);
+
+          $embedding = array_merge_recursive($embedding, $itemBase);
+
+          // Build metadata.
+          $metadata = [
+            'drupal_long_id' => $embedding['id'],
+            'drupal_entity_id' => $item_id,
+          ];
+          foreach ($embedding['metadata'] as $key => $value) {
+            $metadata[$key] = $value;
+          }
+
+          // Collect document for batch upload.
+          // Use actual content text for storage (not ID), fallback to ID if content not available.
+          $contentText = $embedding['metadata']['content'] ?? $embedding['content'] ?? $embedding['id'];
+
+          // Remove content from metadata since it's stored in the content column.
+          unset($metadata['content']);
+
+          $documentsToUpload[] = [
+            'content' => $contentText,
+            'metadata' => $metadata,
+            'vector' => $embedding['values'],
+          ];
+        }
+
+        $successfulItemIds[] = $item_id;
+      }
+    }
+
+    // Batch upload all documents in a single API call.
+    if (!empty($documentsToUpload)) {
+      try {
+        $hasVectors = isset($documentsToUpload[0]['vector']);
+        $this->getLogger('ai_provider_quant_cloud')->info('Sending batch upload: @items items, @docs documents (precomputed_vectors: @pv)', [
+          '@items' => count($items),
+          '@docs' => count($documentsToUpload),
+          '@pv' => $hasVectors ? 'yes' : 'no',
+        ]);
+
+        $response = $this->vdbClient->uploadDocuments($collection_id, $documentsToUpload);
+
+        $this->getLogger('ai_provider_quant_cloud')->info('Batch upload complete: @docs documents to collection @collection', [
+          '@docs' => count($documentsToUpload),
+          '@collection' => $collection_name,
+        ]);
+      }
+      catch (\Exception $e) {
+        $this->getLogger('ai_provider_quant_cloud')->error('Batch upload failed: @message', [
+          '@message' => $e->getMessage(),
+        ]);
+        // If batch fails, return empty - no items were successfully indexed.
+        return [];
+      }
+    }
+
+    return $successfulItemIds;
+  }
+
+  /**
+   * Extract text content from a Search API item and chunk it.
+   *
+   * Uses Drupal's EmbeddingStrategy for content extraction (groupFieldData)
+   * to ensure identical content processing. Only the chunking is done locally,
+   * and embeddings are generated server-side in parallel.
+   *
+   * @param \Drupal\search_api\Item\ItemInterface $item
+   *   The Search API item.
+   * @param \Drupal\search_api\IndexInterface $index
+   *   The Search API index.
+   * @param array $configuration
+   *   The configuration array.
+   * @param \Drupal\ai_search\EmbeddingStrategyInterface $embedding_strategy
+   *   The embedding strategy plugin (used for content extraction only).
+   *
+   * @return array
+   *   Array of text chunks formatted identically to Drupal AI Search.
+   */
+  protected function extractAndChunkContent($item, IndexInterface $index, array $configuration, EmbeddingStrategyInterface $embedding_strategy): array {
+    // Use Drupal's exact field extraction via groupFieldData().
+    // This ensures identical content processing (entity references, HTML to
+    // markdown, etc.) regardless of whether embeddings are generated locally
+    // or server-side.
+    [$title, $contextualContent, $mainContent] = $embedding_strategy->groupFieldData(
+      $item->getFields(),
+      $index
+    );
+
+    if (empty($mainContent) && empty($title) && empty($contextualContent)) {
+      return [];
+    }
+
+    // For server-side embeddings, send content as a single chunk.
+    // The Lambda handles chunking with proper token-based logic,
+    // which is more accurate than character-based chunking.
+    return [$this->prepareChunkText($title, $mainContent, $contextualContent)];
+  }
+
+  /**
+   * Format a chunk with title and contextual content.
+   *
+   * Replicates EmbeddingBase::prepareChunkText() format exactly.
+   *
+   * @param string $title
+   *   The title.
+   * @param string $mainChunk
+   *   The main content chunk.
+   * @param string $contextualChunk
+   *   The contextual content.
+   *
+   * @return string
+   *   Formatted chunk text.
+   */
+  protected function prepareChunkText(string $title, string $mainChunk, string $contextualChunk): string {
+    $parts = [];
+    if (!empty($title)) {
+      $parts[] = '# ' . strtoupper($title);
+    }
+    $parts[] = $mainChunk;
+    if (!empty($contextualChunk)) {
+      $parts[] = $contextualChunk;
+    }
+    return implode("\n\n", $parts);
   }
 
   /**
@@ -197,8 +426,11 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
     }
 
     // Create document with pre-computed vector.
+    // Use actual content if available, not just the ID.
+    $contentText = $data['content'] ?? $data['drupal_long_id'] ?? 'indexed_content';
+
     $document = [
-      'content' => $data['drupal_long_id'] ?? 'indexed_content',
+      'content' => $contentText,
       'metadata' => $metadata,
     ];
 
@@ -235,21 +467,115 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
 
   /**
    * {@inheritdoc}
+   *
+   * Override to delete by drupal_entity_id metadata instead of VDB document IDs.
+   * This is more reliable than maintaining ID mappings in state.
+   */
+  public function deleteItems(array $configuration, array $item_ids): void {
+    if (empty($item_ids)) {
+      return;
+    }
+
+    $collection_name = $configuration['database_settings']['collection'];
+
+    try {
+      $collection_id = $this->resolveCollectionId($collection_name);
+
+      // Delete documents by drupal_entity_id metadata field.
+      // This matches all chunks for the given entity IDs.
+      $response = $this->vdbClient->deleteDocuments(
+        $collection_id,
+        FALSE,
+        [],
+        'drupal_entity_id',
+        $item_ids
+      );
+
+      $deleted_count = $response['deletedCount'] ?? 0;
+      $this->getLogger('ai_provider_quant_cloud')->info('Deleted @deleted documents for @entities entities from collection @collection', [
+        '@deleted' => $deleted_count,
+        '@entities' => count($item_ids),
+        '@collection' => $collection_name,
+      ]);
+    }
+    catch (\Exception $e) {
+      $this->getLogger('ai_provider_quant_cloud')->error('Failed to delete documents: @message', [
+        '@message' => $e->getMessage(),
+      ]);
+      // Don't throw - deletion failure shouldn't break indexing.
+    }
+  }
+
+  /**
+   * {@inheritdoc}
    */
   public function deleteFromCollection(
     string $collection_name,
     array $ids,
     string $database = 'default',
   ): void {
-    // Note: Individual document deletion requires API enhancement.
-    // For now, log a warning.
-    $this->getLogger('ai_provider_quant_cloud')->warning(
-      'Individual document deletion not yet supported. Collection: @collection, IDs: @ids',
-      [
+    // This method is bypassed by our deleteItems override.
+    // Kept for interface compliance.
+    if (empty($ids)) {
+      return;
+    }
+
+    try {
+      $collection_id = $this->resolveCollectionId($collection_name);
+
+      // Delete documents by drupal_long_id metadata field.
+      $response = $this->vdbClient->deleteDocuments(
+        $collection_id,
+        FALSE,
+        [],
+        'drupal_long_id',
+        $ids
+      );
+
+      $deleted_count = $response['deletedCount'] ?? 0;
+      $this->getLogger('ai_provider_quant_cloud')->info('Deleted @deleted of @requested documents from collection @collection', [
+        '@deleted' => $deleted_count,
+        '@requested' => count($ids),
         '@collection' => $collection_name,
-        '@ids' => implode(', ', $ids),
-      ]
-    );
+      ]);
+    }
+    catch (\Exception $e) {
+      $this->getLogger('ai_provider_quant_cloud')->error('Failed to delete documents: @message', [
+        '@message' => $e->getMessage(),
+      ]);
+    }
+  }
+
+  /**
+   * {@inheritdoc}
+   *
+   * Override to use purgeAll instead of dropping/recreating the collection.
+   */
+  public function deleteAllIndexItems(array $configuration, IndexInterface $index, $datasource_id = NULL): void {
+    $collection_name = $configuration['database_settings']['collection'];
+
+    try {
+      $collection_id = $this->resolveCollectionId($collection_name);
+
+      // Use purgeAll to delete all documents while preserving the collection.
+      $response = $this->vdbClient->deleteDocuments($collection_id, TRUE);
+
+      $deleted_count = $response['deletedCount'] ?? 0;
+      $this->getLogger('ai_provider_quant_cloud')->info('Purged all @count documents from collection @collection', [
+        '@count' => $deleted_count,
+        '@collection' => $collection_name,
+      ]);
+
+      // Clear the ID mapping state.
+      $state_key = "ai_provider_quant_cloud.vdb_mapping.{$collection_name}";
+      \Drupal::state()->delete($state_key);
+    }
+    catch (\Exception $e) {
+      $this->getLogger('ai_provider_quant_cloud')->error('Failed to purge collection: @message', [
+        '@message' => $e->getMessage(),
+      ]);
+      throw $e;
+    }
   }
 
   /**
@@ -294,17 +620,23 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
         $vector,
         $limit,
         0.0,
-        FALSE
+        TRUE  // Include metadata
       );
 
       // Map API response to expected format.
+      // Drupal's SearchApiAiSearchBackend expects:
+      // - 'distance' for score (used by setScore(), skipped by extractMetadata())
+      // - 'drupal_entity_id' for entity lookup
+      // - 'id' for the full chunk ID (skipped by extractMetadata())
+      // - 'content' is added to extra data for display
       $results = [];
       foreach ($response['results'] ?? [] as $result) {
         $metadata = $result['metadata'] ?? [];
         $results[] = [
           'id' => $metadata['drupal_long_id'] ?? $result['documentId'],
           'drupal_entity_id' => $metadata['drupal_entity_id'] ?? NULL,
-          'score' => $result['score'] ?? 0.0,
+          'distance' => $result['score'] ?? 0.0,  // Backend expects 'distance', not 'score'
+          'content' => $result['content'] ?? '',
         ];
       }
 
@@ -399,6 +731,9 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
   ): array {
     $form = parent::buildSettingsForm($form, $form_state, $configuration);
 
+    // Fix the collection description - it CAN be changed.
+    $form['collection']['#description'] = $this->t('The collection to use. This will be created automatically if it does not exist.');
+
     // Hide database_name - not relevant for Quant Cloud (uses org from config).
     $form['database_name']['#type'] = 'hidden';
     $form['database_name']['#value'] = 'quant_cloud';
@@ -406,8 +741,17 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
     // Hide metric selector - Quant Cloud uses cosine similarity only.
     if (isset($form['metric'])) {
       $form['metric']['#type'] = 'hidden';
-      $form['metric']['#value'] = 'cosine';
+      $form['metric']['#value'] = VdbSimilarityMetrics::CosineSimilarity->value;
     }
+
+    // Server-side embeddings option - significantly faster indexing.
+    $form['server_side_embeddings'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Server-side embeddings (recommended)'),
+      '#description' => $this->t('Generate embeddings on Quant Cloud servers instead of Drupal. This is <strong>significantly faster</strong> because Quant Cloud processes embeddings in parallel, while Drupal processes them sequentially. Enable this for faster indexing.'),
+      '#default_value' => $configuration['database_settings']['server_side_embeddings'] ?? TRUE,
+      '#weight' => -10,
+    ];
 
     return $form;
   }
@@ -416,18 +760,7 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
    * {@inheritdoc}
    */
   public function viewIndexSettings(array $database_settings): array {
-    return [
-      'database' => [
-        '#type' => 'item',
-        '#title' => $this->t('Database'),
-        '#markup' => $database_settings['database_name'] ?? 'quant_cloud',
-      ],
-      'collection' => [
-        '#type' => 'item',
-        '#title' => $this->t('Collection'),
-        '#markup' => $database_settings['collection'] ?? 'Not configured',
-      ],
-    ];
+    return [];
   }
 
 }

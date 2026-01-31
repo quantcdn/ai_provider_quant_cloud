@@ -476,4 +476,90 @@ class QuantCloudVectorDbClient {
     ]);
   }
 
+  /**
+   * Delete documents from a collection.
+   *
+   * Supports three deletion modes:
+   * 1. purgeAll - Delete ALL documents in the collection
+   * 2. documentIds - Delete specific documents by UUID
+   * 3. metadata - Delete by metadata field match
+   *
+   * @param string $collection_id
+   *   The collection UUID.
+   * @param bool $purge_all
+   *   If TRUE, deletes all documents in the collection.
+   * @param array $document_ids
+   *   Optional array of document UUIDs to delete.
+   * @param string|null $metadata_field
+   *   Optional metadata field name to filter by.
+   * @param array $metadata_values
+   *   Optional array of values to match for the metadata field.
+   *
+   * @return array
+   *   Response with deletion count.
+   */
+  public function deleteDocuments(
+    string $collection_id,
+    bool $purge_all = FALSE,
+    array $document_ids = [],
+    ?string $metadata_field = NULL,
+    array $metadata_values = [],
+  ): array {
+    $data = [];
+
+    if ($purge_all) {
+      $data['purgeAll'] = TRUE;
+    }
+    elseif (!empty($document_ids)) {
+      $data['documentIds'] = $document_ids;
+    }
+    elseif ($metadata_field !== NULL && !empty($metadata_values)) {
+      $data['metadata'] = [
+        'field' => $metadata_field,
+        'values' => $metadata_values,
+      ];
+    }
+    else {
+      throw new \InvalidArgumentException('Must specify purgeAll, documentIds, or metadata filter');
+    }
+
+    $config = $this->getConfig();
+    $url = $this->buildApiUrl("collections/{$collection_id}/documents");
+
+    $options = [
+      'headers' => $this->getHeaders(),
+      'json' => $data,
+      'timeout' => $config->get('advanced.timeout') ?? 30,
+    ];
+
+    try {
+      if ($config->get('advanced.enable_logging')) {
+        $this->logger->info('VectorDB API delete request: @method @url @data', [
+          '@method' => 'DELETE',
+          '@url' => $url,
+          '@data' => json_encode($data),
+        ]);
+      }
+
+      $response = $this->httpClient->delete($url, $options);
+      $body = $response->getBody()->getContents();
+      $result = json_decode($body, TRUE);
+
+      if ($config->get('advanced.enable_logging')) {
+        $this->logger->info('VectorDB API delete response: @status, deleted: @count', [
+          '@status' => $response->getStatusCode(),
+          '@count' => $result['deletedCount'] ?? 0,
+        ]);
+      }
+
+      return $result ?? [];
+    }
+    catch (GuzzleException $e) {
+      $this->logger->error('VectorDB API delete request failed: @message', [
+        '@message' => $e->getMessage(),
+      ]);
+      throw new \RuntimeException('VectorDB API delete request failed: ' . $e->getMessage(), 0, $e);
+    }
+  }
+
 }

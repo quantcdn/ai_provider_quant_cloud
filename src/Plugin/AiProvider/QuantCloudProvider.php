@@ -911,6 +911,22 @@ class QuantCloudProvider extends AiProviderClientBase implements
   /**
    * {@inheritdoc}
    */
+  public function embeddingsVectorSize(string $model_id): int {
+    // Return known dimensions for supported embedding models.
+    // This is more reliable than calling the API to figure it out.
+    $dimensions = [
+      'amazon.titan-embed-text-v2:0' => 1024,
+      'amazon.titan-embed-text-v1' => 1536,
+      'cohere.embed-english-v3' => 1024,
+      'cohere.embed-multilingual-v3' => 1024,
+    ];
+
+    return $dimensions[$model_id] ?? 1024;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   public function getMaxInputTokens(string $model_id): int {
     // Try to get from API first
     try {
