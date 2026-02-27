@@ -19,12 +19,12 @@
   },
   "require": {
     "php": ">=8.1",
-    "drupal/core": "^10.3 || ^11",
+    "drupal/core": "^10.3 || ^11 || ^12",
     "drupal/ai": "^1.0",
     "drupal/key": "^1.17"
   },
   "require-dev": {
-    "drupal/core-dev": "^10.3 || ^11"
+    "drupal/core-dev": "^10.3 || ^11 || ^12"
   },
   "minimum-stability": "dev",
   "prefer-stable": true
