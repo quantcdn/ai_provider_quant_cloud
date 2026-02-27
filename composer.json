@@ -18,7 +18,7 @@
     "docs": "https://docs.quantcdn.io"
   },
   "require": {
-    "php": ">=8.1",
+    "php": ">=8.2",
     "drupal/core": "^10.3 || ^11 || ^12",
     "drupal/ai": "^1.0",
     "drupal/key": "^1.17"
