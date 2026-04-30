@@ -3,6 +3,7 @@
 namespace Drupal\ai_provider_quant_cloud\Controller;
 
 use Drupal\Core\Controller\ControllerBase;
+use Drupal\Core\Render\Markup;
 use Drupal\Core\Url;
 use Drupal\Core\Routing\TrustedRedirectResponse;
 use Drupal\ai_provider_quant_cloud\Service\AuthService;
@@ -84,13 +85,27 @@ class OAuthController extends ControllerBase {
     $error = $request->query->get('error');
     $error_description = $request->query->get('error_description');
     
-    // Check for errors
+    // Check for errors.
     if ($error) {
-      $this->messenger()->addError($this->t('OAuth authorization failed: @error - @description', [
-        '@error' => $error,
-        '@description' => $error_description ?? 'Unknown error',
-      ]));
-      
+      // Detect redirect_uri specific errors and provide helpful guidance.
+      $is_redirect_uri_error = (
+        stripos($error_description ?? '', 'redirect_uri') !== FALSE ||
+        $error === 'invalid_redirect_uri'
+      );
+
+      if ($is_redirect_uri_error) {
+        $this->messenger()->addError(Markup::create($this->t(
+          "Your MCP client's redirect URI isn't registered for this OAuth app. Try the Manual Token option instead — generate a personal access token at <a href=\":token_url\">:token_url</a> and paste it into your client.",
+          [':token_url' => 'https://dashboard.quantcdn.io/profile']
+        )));
+      }
+      else {
+        $this->messenger()->addError($this->t('OAuth authorization failed: @error - @description', [
+          '@error' => $error,
+          '@description' => $error_description ?? 'Unknown error',
+        ]));
+      }
+
       return $this->redirect('ai_provider_quant_cloud.settings_form');
     }
     
