@@ -130,7 +130,9 @@ class QuantCloudConfigForm extends ConfigFormBase {
         'oauth' => $this->t('OAuth2 (Automatic) - One-click connection'),
         'manual' => $this->t('Manual Token - Copy/paste from dashboard'),
       ],
-      '#description' => $this->t('OAuth is recommended for automatic token management and refresh.'),
+      '#description' => $this->t('OAuth is recommended for automatic token management and refresh. For Manual Token, you can find your API token under the "API Tokens" section on your <a href=":url">Quant Cloud dashboard profile page</a>.', [
+        ':url' => 'https://dashboard.quantcdn.io/profile',
+      ]),
     ];
 
     // Get available keys
