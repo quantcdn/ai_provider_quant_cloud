@@ -33,6 +33,29 @@ ai_provider_quant_cloud.settings:
           type: string
         organization_id:
           type: string
+    model:
+      type: mapping
+      label: 'Model settings'
+      mapping:
+        default:
+          type: string
+          label: 'Default model'
+        temperature:
+          type: float
+          label: 'Temperature'
+        max_tokens:
+          type: integer
+          label: 'Max tokens'
+    advanced:
+      type: mapping
+      label: 'Advanced settings'
+      mapping:
+        timeout:
+          type: integer
+          label: 'Request timeout'
+        enable_logging:
+          type: boolean
+          label: 'Enable logging'
 
 ai_provider.plugin.quant_cloud:
   type: mapping

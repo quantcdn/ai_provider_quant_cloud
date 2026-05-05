@@ -14,6 +14,41 @@ use GuzzleHttp\Exception\GuzzleException;
 class QuantCloudClient {
 
   /**
+   * Default chat model.
+   */
+  public const DEFAULT_MODEL = 'amazon.nova-lite-v1:0';
+
+  /**
+   * Default temperature for chat requests.
+   */
+  public const DEFAULT_TEMPERATURE = 0.7;
+
+  /**
+   * Default temperature for completion requests.
+   */
+  public const DEFAULT_COMPLETION_TEMPERATURE = 0.3;
+
+  /**
+   * Default maximum response tokens for chat requests.
+   */
+  public const DEFAULT_MAX_TOKENS = 8192;
+
+  /**
+   * Default HTTP request timeout, in seconds.
+   */
+  public const DEFAULT_TIMEOUT = 300;
+
+  /**
+   * Default HTTP connection timeout, in seconds.
+   */
+  public const DEFAULT_CONNECT_TIMEOUT = 10;
+
+  /**
+   * Default streaming request timeout, in seconds.
+   */
+  public const DEFAULT_STREAMING_TIMEOUT = 60;
+
+  /**
    * The HTTP client.
    *
    * @var \GuzzleHttp\ClientInterface
@@ -167,12 +202,16 @@ class QuantCloudClient {
   public function post(string $path, array $data, array $request_options = []): array {
     $config = $this->getConfig();
     $url = $this->buildApiUrl($path);
+    $timeout = $request_options['timeout']
+      ?? $config->get('advanced.timeout')
+      ?? self::DEFAULT_TIMEOUT;
     
     $options = [
       'headers' => $this->getHeaders(),
       'json' => $data,
-      'timeout' => $request_options['timeout'] ?? $config->get('advanced.timeout') ?? 30,
-      'connect_timeout' => $request_options['connect_timeout'] ?? 10,
+      'timeout' => $timeout,
+      'connect_timeout' => $request_options['connect_timeout']
+        ?? self::DEFAULT_CONNECT_TIMEOUT,
     ];
     
     try {
@@ -197,9 +236,14 @@ class QuantCloudClient {
       
     }
     catch (GuzzleException $e) {
-      $this->logger->error('Quant Dashboard AI request failed: @message', [
-        '@message' => $e->getMessage(),
-      ]);
+      $this->logger->error(
+        'Quant Dashboard AI request failed for @path after @timeout seconds: @message',
+        [
+          '@path' => $path,
+          '@timeout' => $timeout,
+          '@message' => $e->getMessage(),
+        ]
+      );
       throw new \RuntimeException('AI API request failed: ' . $e->getMessage(), 0, $e);
     }
   }
@@ -215,8 +259,12 @@ class QuantCloudClient {
     $data = [
       'messages' => $messages,
       'modelId' => $model_id,
-      'temperature' => $options['temperature'] ?? $config->get('model.temperature') ?? 0.7,
-      'maxTokens' => $options['maxTokens'] ?? $config->get('model.max_tokens') ?? 1000,
+      'temperature' => $options['temperature']
+        ?? $config->get('model.temperature')
+        ?? self::DEFAULT_TEMPERATURE,
+      'maxTokens' => $options['maxTokens']
+        ?? $config->get('model.max_tokens')
+        ?? self::DEFAULT_MAX_TOKENS,
     ];
     
     // Add structured output (JSON Schema) if provided
@@ -234,7 +282,7 @@ class QuantCloudClient {
       $data['systemPrompt'] = $options['systemPrompt'];
     }
     
-    return $this->post('chat', $data);
+    return $this->post('chat', $data, $this->getRequestOptions($options));
   }
 
   /**
@@ -255,11 +303,35 @@ class QuantCloudClient {
         ],
       ],
       'modelId' => $model_id,
-      'temperature' => $options['temperature'] ?? $config->get('completion.temperature') ?? 0.3,
-      'maxTokens' => $options['maxTokens'] ?? $config->get('model.max_tokens') ?? 500,
+      'temperature' => $options['temperature']
+        ?? $config->get('completion.temperature')
+        ?? self::DEFAULT_COMPLETION_TEMPERATURE,
+      'maxTokens' => $options['maxTokens']
+        ?? $config->get('model.max_tokens')
+        ?? self::DEFAULT_MAX_TOKENS,
     ];
     
-    return $this->post('chat', $data);
+    return $this->post('chat', $data, $this->getRequestOptions($options));
+  }
+
+  /**
+   * Extract supported HTTP request options from model options.
+   *
+   * @param array $options
+   *   Chat or completion options.
+   *
+   * @return array
+   *   Guzzle request options safe to pass to post().
+   */
+  protected function getRequestOptions(array $options): array {
+    $request_options = [];
+    foreach (['timeout', 'connect_timeout'] as $key) {
+      if (isset($options[$key])) {
+        $request_options[$key] = $options[$key];
+      }
+    }
+
+    return $request_options;
   }
 
   /**
@@ -313,7 +385,7 @@ class QuantCloudClient {
     
     $options = [
       'headers' => $this->getHeaders(),
-      'timeout' => $config->get('advanced.timeout') ?? 30,
+      'timeout' => $config->get('advanced.timeout') ?? self::DEFAULT_TIMEOUT,
     ];
     
     try {

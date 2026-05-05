@@ -15,7 +15,7 @@ chat:
       label: 'Max Tokens'
       description: 'The maximum number of tokens to generate.'
       type: 'integer'
-      default: 1000
+      default: 8192
       required: false
       constraints:
         min: 1

@@ -31,8 +31,12 @@ class QuantCloudStreamingClient extends QuantCloudClient {
     $data = [
       'messages' => $messages,
       'modelId' => $model_id,
-      'temperature' => $options['temperature'] ?? $config->get('model.temperature') ?? 0.7,
-      'maxTokens' => $options['maxTokens'] ?? $config->get('model.max_tokens') ?? 1000,
+      'temperature' => $options['temperature']
+        ?? $config->get('model.temperature')
+        ?? self::DEFAULT_TEMPERATURE,
+      'maxTokens' => $options['maxTokens']
+        ?? $config->get('model.max_tokens')
+        ?? self::DEFAULT_MAX_TOKENS,
     ];
     
     // Add structured output (JSON Schema) if provided
@@ -56,7 +60,8 @@ class QuantCloudStreamingClient extends QuantCloudClient {
       ]),
       'json' => $data,
       'stream' => TRUE,
-      'timeout' => $config->get('advanced.streaming_timeout') ?? 60,
+      'timeout' => $config->get('advanced.streaming_timeout')
+        ?? self::DEFAULT_STREAMING_TIMEOUT,
     ];
     
     try {
@@ -100,8 +105,12 @@ class QuantCloudStreamingClient extends QuantCloudClient {
     $data = [
       'messages' => $messages,
       'modelId' => $model_id,
-      'temperature' => $options['temperature'] ?? $config->get('model.temperature') ?? 0.7,
-      'maxTokens' => $options['maxTokens'] ?? $config->get('model.max_tokens') ?? 1000,
+      'temperature' => $options['temperature']
+        ?? $config->get('model.temperature')
+        ?? self::DEFAULT_TEMPERATURE,
+      'maxTokens' => $options['maxTokens']
+        ?? $config->get('model.max_tokens')
+        ?? self::DEFAULT_MAX_TOKENS,
     ];
     
     // Add structured output (JSON Schema) if provided
@@ -125,7 +134,8 @@ class QuantCloudStreamingClient extends QuantCloudClient {
       ]),
       'json' => $data,
       'stream' => TRUE,
-      'timeout' => $config->get('advanced.streaming_timeout') ?? 60,
+      'timeout' => $config->get('advanced.streaming_timeout')
+        ?? self::DEFAULT_STREAMING_TIMEOUT,
     ];
     
     try {

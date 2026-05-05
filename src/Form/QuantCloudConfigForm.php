@@ -2,6 +2,7 @@
 
 namespace Drupal\ai_provider_quant_cloud\Form;
 
+use Drupal\ai_provider_quant_cloud\Client\QuantCloudClient;
 use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\key\KeyRepositoryInterface;
@@ -251,7 +252,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
     $form['model_section']['default_model'] = [
       '#type' => 'select',
       '#title' => $this->t('Default Model'),
-      '#default_value' => $config->get('model.default') ?: 'amazon.nova-lite-v1:0',
+      '#default_value' => $config->get('model.default')
+        ?: QuantCloudClient::DEFAULT_MODEL,
       '#options' => $this->getAvailableModels(),
       '#description' => $this->t('The default AI model to use for requests.'),
     ];
@@ -259,7 +261,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
     $form['model_section']['temperature'] = [
       '#type' => 'number',
       '#title' => $this->t('Temperature'),
-      '#default_value' => $config->get('model.temperature') ?: 0.7,
+      '#default_value' => $config->get('model.temperature')
+        ?: QuantCloudClient::DEFAULT_TEMPERATURE,
       '#min' => 0,
       '#max' => 1,
       '#step' => 0.1,
@@ -269,7 +272,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
     $form['model_section']['max_tokens'] = [
       '#type' => 'number',
       '#title' => $this->t('Max Tokens'),
-      '#default_value' => $config->get('model.max_tokens') ?: 1000,
+      '#default_value' => $config->get('model.max_tokens')
+        ?: QuantCloudClient::DEFAULT_MAX_TOKENS,
       '#min' => 1,
       '#max' => 8192,
       '#description' => $this->t('Maximum number of tokens in the response.'),
@@ -284,7 +288,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
     $form['advanced_section']['timeout'] = [
       '#type' => 'number',
       '#title' => $this->t('Request Timeout'),
-      '#default_value' => $config->get('advanced.timeout') ?: 30,
+      '#default_value' => $config->get('advanced.timeout')
+        ?: QuantCloudClient::DEFAULT_TIMEOUT,
       '#min' => 5,
       '#max' => 300,
       '#description' => $this->t('HTTP timeout in seconds for regular requests.'),
