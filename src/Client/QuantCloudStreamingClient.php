@@ -10,6 +10,11 @@ namespace Drupal\ai_provider_quant_cloud\Client;
 class QuantCloudStreamingClient extends QuantCloudClient {
 
   /**
+   * Maximum malformed SSE frames to log per streaming request.
+   */
+  protected const MAX_SSE_DECODE_WARNINGS = 3;
+
+  /**
    * Chat with streaming response (SSE) - returns raw stream.
    * 
    * Dashboard API route: POST /api/v3/organisations/{orgId}/ai/chat/stream
@@ -74,7 +79,7 @@ class QuantCloudStreamingClient extends QuantCloudClient {
       
     }
     catch (\Exception $e) {
-      $this->logger->error('❌ Streaming request failed: @message', [
+      $this->logger->error('Streaming request failed: @message', [
         '@message' => $e->getMessage(),
       ]);
       throw new \RuntimeException('Streaming failed: ' . $e->getMessage(), 0, $e);
@@ -148,6 +153,7 @@ class QuantCloudStreamingClient extends QuantCloudClient {
       
       $full_content = '';
       $final_data = NULL;
+      $decode_warnings = 0;
       
       // Read SSE stream
       while (!$body->eof()) {
@@ -157,8 +163,18 @@ class QuantCloudStreamingClient extends QuantCloudClient {
         if (strpos($line, 'data: ') === 0) {
           $json_data = json_decode(substr($line, 6), TRUE);
           
-          if ($json_data === NULL) {
-            $this->logger->warning('Failed to decode SSE JSON data');
+          if (json_last_error() !== JSON_ERROR_NONE) {
+            $decode_warnings++;
+            if ($decode_warnings <= self::MAX_SSE_DECODE_WARNINGS) {
+              $this->logger->warning(
+                'Failed to decode SSE JSON data for streaming response. '
+                . 'Warning @count of @limit for this request.',
+                [
+                  '@count' => $decode_warnings,
+                  '@limit' => self::MAX_SSE_DECODE_WARNINGS,
+                ]
+              );
+            }
             continue;
           }
           
@@ -181,7 +197,7 @@ class QuantCloudStreamingClient extends QuantCloudClient {
       
     }
     catch (\Exception $e) {
-      $this->logger->error('❌ Streaming request failed: @message', [
+      $this->logger->error('Streaming request failed: @message', [
         '@message' => $e->getMessage(),
       ]);
       throw new \RuntimeException('Streaming failed: ' . $e->getMessage(), 0, $e);
