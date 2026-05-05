@@ -31,12 +31,12 @@ class QuantCloudClient {
   /**
    * Default maximum response tokens for chat requests.
    */
-  public const DEFAULT_MAX_TOKENS = 8192;
+  public const DEFAULT_MAX_TOKENS = 4096;
 
   /**
    * Default HTTP request timeout, in seconds.
    */
-  public const DEFAULT_TIMEOUT = 300;
+  public const DEFAULT_TIMEOUT = 120;
 
   /**
    * Default HTTP connection timeout, in seconds.
