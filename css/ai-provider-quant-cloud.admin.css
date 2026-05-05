@@ -1,0 +1,54 @@
+.ai-provider-quant-cloud-oauth-connect {
+  margin: 15px 0;
+  padding: 20px;
+  border: 2px solid #2196f3;
+  border-radius: 8px;
+  background: #f5f5f5;
+}
+
+.ai-provider-quant-cloud-oauth-connect__title {
+  margin-top: 0;
+}
+
+.ai-provider-quant-cloud-oauth-connect__button {
+  display: inline-block;
+  padding: 12px 24px;
+  color: #fff;
+  border-radius: 6px;
+  background: #2196f3;
+  font-size: 16px;
+  text-decoration: none;
+}
+
+.ai-provider-quant-cloud-oauth-connect__note {
+  color: #666;
+  font-size: 0.9em;
+}
+
+details.ai-provider-quant-cloud-manual-token-help,
+.claro-details.ai-provider-quant-cloud-manual-token-help {
+  color: #fff;
+  border-color: #2b7dbd;
+  background-color: #0f3447;
+}
+
+details.ai-provider-quant-cloud-manual-token-help .claro-details__summary,
+details.ai-provider-quant-cloud-manual-token-help .claro-details__summary:hover,
+details.ai-provider-quant-cloud-manual-token-help .claro-details__summary:focus,
+details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary,
+details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:active,
+details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:focus,
+.claro-details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:active,
+.claro-details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:focus,
+details.ai-provider-quant-cloud-manual-token-help .claro-details__summary-summary,
+details.ai-provider-quant-cloud-manual-token-help a {
+  color: #fff;
+}
+
+details.ai-provider-quant-cloud-manual-token-help .claro-details__summary::before {
+  filter: brightness(0) invert(1);
+}
+
+.ai-provider-quant-cloud-manual-token-help__content {
+  color: #fff;
+}

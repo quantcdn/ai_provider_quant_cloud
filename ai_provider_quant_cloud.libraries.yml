@@ -1,0 +1,4 @@
+admin:
+  css:
+    theme:
+      css/ai-provider-quant-cloud.admin.css: {}
