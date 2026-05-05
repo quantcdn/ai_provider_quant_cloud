@@ -47,6 +47,8 @@ class QuantCloudProviderFailureDetectionTest extends UnitTestCase {
       'null' => [NULL, TRUE],
       'zero string' => ['0', FALSE],
       'zero integer' => [0, FALSE],
+      'integer content' => [42, FALSE],
+      'false content' => [FALSE, FALSE],
       'empty array' => [[], TRUE],
       'text item' => [[['text' => 'Generated content']], FALSE],
       'empty text item' => [[['text' => '']], TRUE],
@@ -158,6 +160,10 @@ class QuantCloudProviderFailureDetectionTest extends UnitTestCase {
       'top-level camel case usage' => [
         ['usage' => ['outputTokens' => 123]],
         123,
+      ],
+      'float output tokens' => [
+        ['usage' => ['outputTokens' => 1.9]],
+        1,
       ],
       'nested snake case usage' => [
         ['response' => ['usage' => ['output_tokens' => 456]]],
