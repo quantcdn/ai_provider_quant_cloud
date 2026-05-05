@@ -220,10 +220,10 @@ class QuantCloudConfigForm extends ConfigFormBase {
       '#markup' => '<div class="ai-provider-quant-cloud-manual-token-help__content">' . $this->t(
         '<ol>
         <li>Log in to your <a href="@quantcdn" target="_blank" rel="noopener noreferrer">QuantCDN</a> or <a href="@quantgov" target="_blank" rel="noopener noreferrer">QuantGov</a> dashboard</li>
-        <li>Go to <strong>Profile → Create Token</strong></li>
+        <li>Go to <strong>Profile &rarr; Create Token</strong></li>
         <li>Configure the token\'s organizations, permissions, and expiration</li>
         <li>Copy the generated token</li>
-        <li>In Drupal, go to <a href=":keys_url">Configuration → Keys</a></li>
+        <li>In Drupal, go to <a href=":keys_url">Configuration &rarr; Keys</a></li>
         <li>Create a new key with the token value</li>
         <li>Return here and select that key above</li>
         </ol>', [
