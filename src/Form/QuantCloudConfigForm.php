@@ -134,12 +134,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
         '#tag' => 'p',
         '#value' => $this->t('Click the button below to automatically connect your Drupal site to Quant Cloud using secure OAuth2 authentication.'),
       ];
-      $form['auth_section']['oauth_connect']['connect_button_wrapper'] = [
-        '#type' => 'container',
-        '#prefix' => '<p>',
-        '#suffix' => '</p>',
-      ];
-      $form['auth_section']['oauth_connect']['connect_button_wrapper']['connect_button'] = [
+      $form['auth_section']['oauth_connect']['connect_button'] = [
         '#type' => 'link',
         '#title' => $this->t('Connect to Quant Cloud'),
         '#url' => Url::fromRoute('ai_provider_quant_cloud.oauth_connect'),
@@ -151,6 +146,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
             'ai-provider-quant-cloud-oauth-connect__button',
           ],
         ],
+        '#prefix' => '<p>',
+        '#suffix' => '</p>',
       ];
       $form['auth_section']['oauth_connect']['note'] = [
         '#type' => 'html_tag',

@@ -20,6 +20,11 @@
   text-decoration: none;
 }
 
+.ai-provider-quant-cloud-oauth-connect__button:focus-visible {
+  outline: 3px solid var(--color-absolutezero);
+  outline-offset: 2px;
+}
+
 .ai-provider-quant-cloud-oauth-connect__note {
   color: var(--color-gray-800);
   font-size: 0.9em;
