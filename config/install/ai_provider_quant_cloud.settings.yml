@@ -27,5 +27,5 @@ model:
 # Advanced request settings.
 advanced:
   timeout: 300
-  enable_logging: true
+  enable_logging: false
 

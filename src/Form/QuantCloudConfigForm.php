@@ -298,7 +298,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
     $form['advanced_section']['enable_logging'] = [
       '#type' => 'checkbox',
       '#title' => $this->t('Enable Logging'),
-      '#default_value' => $config->get('advanced.enable_logging') ?? TRUE,
+      '#default_value' => $config->get('advanced.enable_logging') ?? FALSE,
       '#description' => $this->t('Log API requests and responses for debugging.'),
     ];
 
