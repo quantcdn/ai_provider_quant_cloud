@@ -5,6 +5,7 @@ namespace Drupal\ai_provider_quant_cloud\Form;
 use Drupal\ai_provider_quant_cloud\Client\QuantCloudClient;
 use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Url;
 use Drupal\key\KeyRepositoryInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
@@ -98,15 +99,16 @@ class QuantCloudConfigForm extends ConfigFormBase {
     if ($is_oauth_connected) {
       $form['auth_section']['oauth_status'] = [
         '#type' => 'markup',
-        '#markup' => '<div class="messages messages--status">' . $this->t(
-          '✅ <strong>Connected via OAuth:</strong> You are authenticated with Quant Cloud using OAuth2. Your access token will automatically refresh when needed.'
-        ) . '</div>',
+        '#markup' => '<div class="messages messages--status"><strong>' .
+          $this->t('Connected via OAuth:') . '</strong> ' .
+          $this->t('You are authenticated with Quant Cloud using OAuth2. Your access token will automatically refresh when needed.') .
+          '</div>',
       ];
       
       $form['auth_section']['oauth_disconnect'] = [
         '#type' => 'link',
         '#title' => $this->t('Disconnect from Quant Cloud'),
-        '#url' => \Drupal\Core\Url::fromRoute('ai_provider_quant_cloud.oauth_disconnect'),
+        '#url' => Url::fromRoute('ai_provider_quant_cloud.oauth_disconnect'),
         '#attributes' => [
           'class' => ['button', 'button--danger'],
         ],
@@ -114,15 +116,49 @@ class QuantCloudConfigForm extends ConfigFormBase {
     }
     else {
       $form['auth_section']['oauth_connect'] = [
-        '#type' => 'markup',
-        '#markup' => '<div class="ai-provider-quant-cloud-oauth-connect">' .
-          '<h3 class="ai-provider-quant-cloud-oauth-connect__title">🚀 ' . $this->t('Connect with Quant Cloud (Recommended)') . '</h3>' .
-          '<p>' . $this->t('Click the button below to automatically connect your Drupal site to Quant Cloud using secure OAuth2 authentication.') . '</p>' .
-          '<p><a href="/admin/config/ai/quant-cloud/oauth/connect" class="button button--primary button--action ai-provider-quant-cloud-oauth-connect__button">' .
-          '🔐 ' . $this->t('Connect to Quant Cloud') .
-          '</a></p>' .
-          '<p class="ai-provider-quant-cloud-oauth-connect__note">' . $this->t('You will be redirected to your Quant Cloud dashboard to authorize this connection.') . '</p>' .
-          '</div>',
+        '#type' => 'container',
+        '#attributes' => [
+          'class' => ['ai-provider-quant-cloud-oauth-connect'],
+        ],
+      ];
+      $form['auth_section']['oauth_connect']['title'] = [
+        '#type' => 'html_tag',
+        '#tag' => 'h3',
+        '#value' => $this->t('Connect with Quant Cloud (Recommended)'),
+        '#attributes' => [
+          'class' => ['ai-provider-quant-cloud-oauth-connect__title'],
+        ],
+      ];
+      $form['auth_section']['oauth_connect']['description'] = [
+        '#type' => 'html_tag',
+        '#tag' => 'p',
+        '#value' => $this->t('Click the button below to automatically connect your Drupal site to Quant Cloud using secure OAuth2 authentication.'),
+      ];
+      $form['auth_section']['oauth_connect']['connect_button_wrapper'] = [
+        '#type' => 'container',
+        '#prefix' => '<p>',
+        '#suffix' => '</p>',
+      ];
+      $form['auth_section']['oauth_connect']['connect_button_wrapper']['connect_button'] = [
+        '#type' => 'link',
+        '#title' => $this->t('Connect to Quant Cloud'),
+        '#url' => Url::fromRoute('ai_provider_quant_cloud.oauth_connect'),
+        '#attributes' => [
+          'class' => [
+            'button',
+            'button--primary',
+            'button--action',
+            'ai-provider-quant-cloud-oauth-connect__button',
+          ],
+        ],
+      ];
+      $form['auth_section']['oauth_connect']['note'] = [
+        '#type' => 'html_tag',
+        '#tag' => 'p',
+        '#value' => $this->t('You will be redirected to your Quant Cloud dashboard to authorize this connection.'),
+        '#attributes' => [
+          'class' => ['ai-provider-quant-cloud-oauth-connect__note'],
+        ],
       ];
     }
 
@@ -145,18 +181,20 @@ class QuantCloudConfigForm extends ConfigFormBase {
       if ($token_valid) {
         $form['auth_section']['token_status'] = [
           '#type' => 'markup',
-          '#markup' => '<div class="messages messages--status ai-provider-quant-cloud-token-status"><span class="ai-provider-quant-cloud-token-status__message">' . $this->t(
-            '✅ <strong>Token Valid:</strong> Your access token is working correctly and has been validated against the API.'
-          ) . '</span></div>',
+          '#markup' => '<div class="messages messages--status ai-provider-quant-cloud-token-status"><span class="ai-provider-quant-cloud-token-status__message"><strong>' .
+            $this->t('Token Valid:') . '</strong> ' .
+            $this->t('Your access token is working correctly and has been validated against the API.') .
+            '</span></div>',
           '#weight' => 20,
         ];
       }
       else {
         $form['auth_section']['token_status'] = [
           '#type' => 'markup',
-          '#markup' => '<div class="messages messages--error ai-provider-quant-cloud-token-status"><span class="ai-provider-quant-cloud-token-status__message">' . $this->t(
-            '❌ <strong>Token Invalid:</strong> Your access token could not be validated. Please check your configuration or generate a new token.'
-          ) . '</span></div>',
+          '#markup' => '<div class="messages messages--error ai-provider-quant-cloud-token-status"><span class="ai-provider-quant-cloud-token-status__message"><strong>' .
+            $this->t('Token Invalid:') . '</strong> ' .
+            $this->t('Your access token could not be validated. Please check your configuration or generate a new token.') .
+            '</span></div>',
           '#weight' => 20,
         ];
       }
@@ -191,7 +229,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
         </ol>', [
           '@quantcdn' => 'https://dashboard.quantcdn.io',
           '@quantgov' => 'https://dash.quantgov.cloud',
-          ':keys_url' => \Drupal\Core\Url::fromRoute('entity.key.collection')->toString(),
+          ':keys_url' => Url::fromRoute('entity.key.collection')->toString(),
         ]
       ) . '</div>',
     ];
@@ -209,7 +247,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
       '#options' => $key_options,
       '#empty_option' => $this->t('- Select a key -'),
       '#description' => $this->t('Select the Key module key containing your access token. <a href=":url">Manage keys</a>.', [
-        ':url' => \Drupal\Core\Url::fromRoute('entity.key.collection')->toString(),
+        ':url' => Url::fromRoute('entity.key.collection')->toString(),
       ]),
       '#states' => [
         'visible' => [
