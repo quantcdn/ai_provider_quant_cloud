@@ -31,6 +31,8 @@ ai_provider_quant_cloud.settings:
           type: string
         access_token_key:
           type: string
+        refresh_token_key:
+          type: string
         organization_id:
           type: string
 

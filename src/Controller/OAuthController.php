@@ -51,27 +51,25 @@ class OAuthController extends ControllerBase {
   }
 
   /**
-   * Initiates OAuth connection flow.
+   * Initiates OAuth connection flow with PKCE.
    */
   public function connect(Request $request) {
-    // Generate CSRF state token
     $state = bin2hex(random_bytes(16));
-    
-    // Store state in session for validation
+    $verifier = $this->authService->generatePkceVerifier();
+    $challenge = $this->authService->computePkceChallenge($verifier);
+
     $session = $request->getSession();
     $session->set('quant_cloud_oauth_state', $state);
-    
-    // Build callback URL
+    $session->set('quant_cloud_oauth_pkce_verifier', $verifier);
+
     $callback_url = Url::fromRoute('ai_provider_quant_cloud.oauth_callback', [], [
       'absolute' => TRUE,
     ])->toString();
-    
-    // Get authorization URL
-    $auth_url = $this->authService->getAuthorizationUrl($state, $callback_url);
-    
+
+    $auth_url = $this->authService->getAuthorizationUrl($state, $callback_url, $challenge);
+
     $this->messenger()->addStatus($this->t('Redirecting to Quant Cloud for authorization...'));
-    
-    // Redirect to dashboard OAuth (use TrustedRedirectResponse for external URLs)
+
     return new TrustedRedirectResponse($auth_url);
   }
 
@@ -83,108 +81,46 @@ class OAuthController extends ControllerBase {
     $state = $request->query->get('state');
     $error = $request->query->get('error');
     $error_description = $request->query->get('error_description');
-    
-    // Check for errors
+
     if ($error) {
       $this->messenger()->addError($this->t('OAuth authorization failed: @error - @description', [
         '@error' => $error,
         '@description' => $error_description ?? 'Unknown error',
       ]));
-      
       return $this->redirect('ai_provider_quant_cloud.settings_form');
     }
-    
-    // Validate state (CSRF protection)
+
     $session = $request->getSession();
     $stored_state = $session->get('quant_cloud_oauth_state');
+    $verifier = $session->get('quant_cloud_oauth_pkce_verifier');
     $session->remove('quant_cloud_oauth_state');
-    
+    $session->remove('quant_cloud_oauth_pkce_verifier');
+
     if (!$stored_state || $stored_state !== $state) {
       $this->messenger()->addError($this->t('Invalid OAuth state. Possible CSRF attack detected.'));
       return $this->redirect('ai_provider_quant_cloud.settings_form');
     }
-    
-    if (!$code) {
-      $this->messenger()->addError($this->t('No authorization code received from Quant Cloud.'));
+
+    if (!$code || !$verifier) {
+      $this->messenger()->addError($this->t('OAuth flow corrupted: missing code or PKCE verifier.'));
       return $this->redirect('ai_provider_quant_cloud.settings_form');
     }
-    
-    // Exchange code for token
+
     $callback_url = Url::fromRoute('ai_provider_quant_cloud.oauth_callback', [], [
       'absolute' => TRUE,
     ])->toString();
-    
-    $token_data = $this->authService->exchangeCodeForToken($code, $callback_url);
-    
+
+    $token_data = $this->authService->exchangeCodeForToken($code, $callback_url, $verifier);
+
     if (!$token_data || !isset($token_data['access_token'])) {
       $this->messenger()->addError($this->t('Failed to exchange authorization code for access token.'));
       return $this->redirect('ai_provider_quant_cloud.settings_form');
     }
-    
-    // Store access token in Key module
-    $access_token = $token_data['access_token'];
-    $refresh_token = $token_data['refresh_token'] ?? NULL;
-    $expires_in = $token_data['expires_in'] ?? 3600;
-    
-    // Create or update the key for access token
-    $key_id = 'quant_cloud_oauth_access_token';
-    
-    // Check if key exists and delete it (simpler than trying to update)
-    $existing_key = $this->keyRepository->getKey($key_id);
-    if ($existing_key) {
-      $existing_key->delete();
-    }
-    
-    // Create new key with proper configuration
-    $key = $this->entityTypeManager()->getStorage('key')->create([
-      'id' => $key_id,
-      'label' => 'Quant Cloud OAuth Access Token (Auto-generated)',
-      'description' => 'OAuth2 access token for Quant Cloud API',
-      'key_type' => 'authentication',
-      'key_provider' => 'config',
-      'key_input' => 'text_field',
-      'key_provider_settings' => [
-        'key_value' => $access_token,
-      ],
-    ]);
-    $key->save();
-    
-    // Store refresh token separately if provided
-    if ($refresh_token) {
-      $refresh_key_id = 'quant_cloud_oauth_refresh_token';
-      
-      // Delete existing refresh token if it exists
-      $existing_refresh = $this->keyRepository->getKey($refresh_key_id);
-      if ($existing_refresh) {
-        $existing_refresh->delete();
-      }
-      
-      // Create new refresh token key
-      $refresh_key = $this->entityTypeManager()->getStorage('key')->create([
-        'id' => $refresh_key_id,
-        'label' => 'Quant Cloud OAuth Refresh Token (Auto-generated)',
-        'description' => 'OAuth2 refresh token for Quant Cloud API',
-        'key_type' => 'authentication',
-        'key_provider' => 'config',
-        'key_input' => 'text_field',
-        'key_provider_settings' => [
-          'key_value' => $refresh_token,
-        ],
-      ]);
-      $refresh_key->save();
-      
-      // Store expiry time
-      $this->state()->set('quant_cloud_oauth_expires_at', time() + $expires_in);
-    }
-    
-    // Update module configuration to use the OAuth key
-    $config = \Drupal::configFactory()->getEditable('ai_provider_quant_cloud.settings');
-    $config->set('auth.method', 'oauth');
-    $config->set('auth.access_token_key', $key_id);
-    $config->save();
-    
+
+    $this->authService->persistTokens($token_data);
+
     $this->messenger()->addStatus($this->t('Successfully connected to Quant Cloud! Your access token has been stored securely.'));
-    
+
     return $this->redirect('ai_provider_quant_cloud.settings_form');
   }
 
@@ -192,28 +128,23 @@ class OAuthController extends ControllerBase {
    * Disconnects OAuth and removes tokens.
    */
   public function disconnect(Request $request) {
-    // Remove OAuth keys
-    $access_key = $this->keyRepository->getKey('quant_cloud_oauth_access_token');
-    if ($access_key) {
-      $access_key->delete();
+    foreach (['quant_cloud_oauth_access_token', 'quant_cloud_oauth_refresh_token'] as $key_id) {
+      $key = $this->keyRepository->getKey($key_id);
+      if ($key) {
+        $key->delete();
+      }
     }
-    
-    $refresh_key = $this->keyRepository->getKey('quant_cloud_oauth_refresh_token');
-    if ($refresh_key) {
-      $refresh_key->delete();
-    }
-    
-    // Clear state
+
     $this->state()->delete('quant_cloud_oauth_expires_at');
-    
-    // Update config
+
     $config = \Drupal::configFactory()->getEditable('ai_provider_quant_cloud.settings');
     $config->set('auth.method', 'manual');
     $config->set('auth.access_token_key', NULL);
+    $config->set('auth.refresh_token_key', NULL);
     $config->save();
-    
+
     $this->messenger()->addStatus($this->t('Disconnected from Quant Cloud. Your tokens have been removed.'));
-    
+
     return $this->redirect('ai_provider_quant_cloud.settings_form');
   }
 
