@@ -25,10 +25,15 @@
   font-size: 0.9em;
 }
 
-.messages.messages--status.ai-provider-quant-cloud-token-status,
-.messages.messages--status.ai-provider-quant-cloud-token-status strong {
+.messages.ai-provider-quant-cloud-token-status {
   --messages-fg-color: #fff;
 
+  color: #fff;
+  background-color: var(--messages-bg-color, #353641);
+}
+
+.messages.ai-provider-quant-cloud-token-status .ai-provider-quant-cloud-token-status__message,
+.messages.ai-provider-quant-cloud-token-status .ai-provider-quant-cloud-token-status__message strong {
   color: #fff;
 }
 
@@ -74,10 +79,15 @@ details.ai-provider-quant-cloud-manual-token-help .claro-details__summary::befor
     background-color: ButtonFace;
   }
 
-  .messages.messages--status.ai-provider-quant-cloud-token-status,
-  .messages.messages--status.ai-provider-quant-cloud-token-status strong {
+  .messages.ai-provider-quant-cloud-token-status {
     --messages-fg-color: CanvasText;
 
+    color: CanvasText;
+    background-color: Canvas;
+  }
+
+  .messages.ai-provider-quant-cloud-token-status .ai-provider-quant-cloud-token-status__message,
+  .messages.ai-provider-quant-cloud-token-status .ai-provider-quant-cloud-token-status__message strong {
     color: CanvasText;
   }
 

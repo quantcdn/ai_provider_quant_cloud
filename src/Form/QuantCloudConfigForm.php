@@ -145,18 +145,18 @@ class QuantCloudConfigForm extends ConfigFormBase {
       if ($token_valid) {
         $form['auth_section']['token_status'] = [
           '#type' => 'markup',
-          '#markup' => '<div class="messages messages--status ai-provider-quant-cloud-token-status">' . $this->t(
+          '#markup' => '<div class="messages messages--status ai-provider-quant-cloud-token-status"><span class="ai-provider-quant-cloud-token-status__message">' . $this->t(
             '✅ <strong>Token Valid:</strong> Your access token is working correctly and has been validated against the API.'
-          ) . '</div>',
+          ) . '</span></div>',
           '#weight' => 20,
         ];
       }
       else {
         $form['auth_section']['token_status'] = [
           '#type' => 'markup',
-          '#markup' => '<div class="messages messages--error ai-provider-quant-cloud-token-status">' . $this->t(
+          '#markup' => '<div class="messages messages--error ai-provider-quant-cloud-token-status"><span class="ai-provider-quant-cloud-token-status__message">' . $this->t(
             '❌ <strong>Token Invalid:</strong> Your access token could not be validated. Please check your configuration or generate a new token.'
-          ) . '</div>',
+          ) . '</span></div>',
           '#weight' => 20,
         ];
       }
@@ -185,12 +185,13 @@ class QuantCloudConfigForm extends ConfigFormBase {
         <li>Go to <strong>Profile → Create Token</strong></li>
         <li>Configure the token\'s organizations, permissions, and expiration</li>
         <li>Copy the generated token</li>
-        <li>In Drupal, go to <a href="/admin/config/system/keys">Configuration → Keys</a></li>
+        <li>In Drupal, go to <a href=":keys_url">Configuration → Keys</a></li>
         <li>Create a new key with the token value</li>
         <li>Return here and select that key above</li>
         </ol>', [
           '@quantcdn' => 'https://dashboard.quantcdn.io',
           '@quantgov' => 'https://dash.quantgov.cloud',
+          ':keys_url' => \Drupal\Core\Url::fromRoute('entity.key.collection')->toString(),
         ]
       ) . '</div>',
     ];
@@ -207,8 +208,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
       '#default_value' => $config->get('auth.access_token_key'),
       '#options' => $key_options,
       '#empty_option' => $this->t('- Select a key -'),
-      '#description' => $this->t('Select the Key module key containing your access token. <a href="@url">Manage keys</a>.', [
-        '@url' => '/admin/config/system/keys',
+      '#description' => $this->t('Select the Key module key containing your access token. <a href=":url">Manage keys</a>.', [
+        ':url' => \Drupal\Core\Url::fromRoute('entity.key.collection')->toString(),
       ]),
       '#states' => [
         'visible' => [
