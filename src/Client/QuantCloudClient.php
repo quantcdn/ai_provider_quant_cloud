@@ -211,6 +211,7 @@ class QuantCloudClient {
       'json' => $data,
       'timeout' => $timeout,
       'connect_timeout' => $request_options['connect_timeout']
+        ?? $config->get('advanced.connect_timeout')
         ?? self::DEFAULT_CONNECT_TIMEOUT,
     ];
     

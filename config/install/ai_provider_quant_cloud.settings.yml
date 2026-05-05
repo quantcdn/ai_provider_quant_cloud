@@ -27,5 +27,7 @@ model:
 # Advanced request settings.
 advanced:
   timeout: 120
+  connect_timeout: 10
+  streaming_timeout: 60
   enable_logging: false
 

@@ -295,6 +295,26 @@ class QuantCloudConfigForm extends ConfigFormBase {
       '#description' => $this->t('HTTP timeout in seconds for regular requests.'),
     ];
 
+    $form['advanced_section']['connect_timeout'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Connection Timeout'),
+      '#default_value' => $config->get('advanced.connect_timeout')
+        ?: QuantCloudClient::DEFAULT_CONNECT_TIMEOUT,
+      '#min' => 1,
+      '#max' => 60,
+      '#description' => $this->t('HTTP connection timeout in seconds.'),
+    ];
+
+    $form['advanced_section']['streaming_timeout'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Streaming Request Timeout'),
+      '#default_value' => $config->get('advanced.streaming_timeout')
+        ?: QuantCloudClient::DEFAULT_STREAMING_TIMEOUT,
+      '#min' => 5,
+      '#max' => 300,
+      '#description' => $this->t('HTTP timeout in seconds for streaming requests.'),
+    ];
+
     $form['advanced_section']['enable_logging'] = [
       '#type' => 'checkbox',
       '#title' => $this->t('Enable Logging'),
@@ -318,6 +338,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
       ->set('model.temperature', $form_state->getValue('temperature'))
       ->set('model.max_tokens', $form_state->getValue('max_tokens'))
       ->set('advanced.timeout', $form_state->getValue('timeout'))
+      ->set('advanced.connect_timeout', $form_state->getValue('connect_timeout'))
+      ->set('advanced.streaming_timeout', $form_state->getValue('streaming_timeout'))
       ->set('advanced.enable_logging', $form_state->getValue('enable_logging'))
       ->save();
 

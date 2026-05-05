@@ -353,9 +353,9 @@ class QuantCloudProvider extends AiProviderClientBase implements
         $this->logPotentialChatFailure(
           $response_data,
           $model_id,
-          $options['maxTokens']
+          (int) ($options['maxTokens']
             ?? $this->getConfig()->get('model.max_tokens')
-            ?? QuantCloudClient::DEFAULT_MAX_TOKENS,
+            ?? QuantCloudClient::DEFAULT_MAX_TOKENS),
           !empty($options['toolConfig']),
           $content,
           $tool_use_data
@@ -416,7 +416,7 @@ class QuantCloudProvider extends AiProviderClientBase implements
    *   The raw response data.
    * @param string $model_id
    *   The requested model ID.
-   * @param int|string|null $max_tokens
+   * @param int $max_tokens
    *   The configured response token limit.
    * @param bool $tools_requested
    *   TRUE when the request included tool configuration.
@@ -428,16 +428,19 @@ class QuantCloudProvider extends AiProviderClientBase implements
   protected function logPotentialChatFailure(
     array $response_data,
     string $model_id,
-    int|string|null $max_tokens,
+    int $max_tokens,
     bool $tools_requested,
     mixed $content,
     mixed $tool_use_data,
   ): void {
-    $max_tokens = (int) $max_tokens;
     $output_tokens = $this->getOutputTokenCount($response_data);
     $stop_reason = $this->getStopReason($response_data);
 
-    if ($max_tokens > 0 && $output_tokens >= $max_tokens) {
+    // These warnings intentionally bypass the verbose logging flag. They
+    // surface probable response failures, not routine request/response logs.
+    if (
+      $this->isLikelyTokenLimited($stop_reason, $output_tokens, $max_tokens)
+    ) {
       $this->logger->warning(
         'Quant Cloud chat response reached the configured max token limit. '
         . 'Increase model.max_tokens if the response was incomplete. '
@@ -485,7 +488,7 @@ class QuantCloudProvider extends AiProviderClientBase implements
     }
 
     if (!is_array($content)) {
-      return empty($content);
+      return $content === NULL;
     }
 
     foreach ($content as $item) {
@@ -503,6 +506,60 @@ class QuantCloudProvider extends AiProviderClientBase implements
     }
 
     return TRUE;
+  }
+
+  /**
+   * Determine whether a response likely stopped because of the token limit.
+   *
+   * @param string|null $stop_reason
+   *   The response stop reason.
+   * @param int $output_tokens
+   *   The reported output token count.
+   * @param int $max_tokens
+   *   The configured response token limit.
+   *
+   * @return bool
+   *   TRUE when the response likely hit the token limit.
+   */
+  protected function isLikelyTokenLimited(
+    ?string $stop_reason,
+    int $output_tokens,
+    int $max_tokens,
+  ): bool {
+    if ($max_tokens <= 0) {
+      return FALSE;
+    }
+
+    $normalized_stop_reason = $stop_reason !== NULL
+      ? strtolower($stop_reason)
+      : NULL;
+
+    $token_limit_reasons = [
+      'length',
+      'max_token',
+      'max_tokens',
+      'model_length',
+      'token_limit',
+    ];
+    if (in_array($normalized_stop_reason, $token_limit_reasons, TRUE)) {
+      return TRUE;
+    }
+
+    $complete_reasons = [
+      'complete',
+      'completed',
+      'end_turn',
+      'finished',
+      'stop',
+      'stop_sequence',
+      'tool_calls',
+      'tool_use',
+    ];
+    if (in_array($normalized_stop_reason, $complete_reasons, TRUE)) {
+      return FALSE;
+    }
+
+    return $output_tokens >= $max_tokens;
   }
 
   /**

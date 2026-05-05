@@ -53,6 +53,12 @@ ai_provider_quant_cloud.settings:
         timeout:
           type: integer
           label: 'Request timeout'
+        connect_timeout:
+          type: integer
+          label: 'Connection timeout'
+        streaming_timeout:
+          type: integer
+          label: 'Streaming request timeout'
         enable_logging:
           type: boolean
           label: 'Enable logging'

@@ -2,8 +2,6 @@
 
 declare(strict_types=1);
 
-use Drupal\ai_provider_quant_cloud\Client\QuantCloudClient;
-
 /**
  * @file
  * Install and update hooks for the Quant Cloud AI Provider module.
@@ -13,8 +11,10 @@ use Drupal\ai_provider_quant_cloud\Client\QuantCloudClient;
  * Raise chat defaults for longer agent and tool-use responses.
  */
 function ai_provider_quant_cloud_update_10001(): void {
-  $default_max_tokens = QuantCloudClient::DEFAULT_MAX_TOKENS;
-  $default_timeout = QuantCloudClient::DEFAULT_TIMEOUT;
+  // Keep install hooks independent of runtime class autoloading.
+  // These mirror QuantCloudClient::DEFAULT_MAX_TOKENS and DEFAULT_TIMEOUT.
+  $default_max_tokens = 4096;
+  $default_timeout = 120;
 
   $config = \Drupal::configFactory()
     ->getEditable('ai_provider_quant_cloud.settings');
@@ -29,6 +29,21 @@ function ai_provider_quant_cloud_update_10001(): void {
   $timeout = $config->get('advanced.timeout');
   if (!$timeout || (int) $timeout === 30) {
     $config->set('advanced.timeout', $default_timeout);
+    $changed = TRUE;
+  }
+
+  if ($config->get('advanced.connect_timeout') === NULL) {
+    $config->set('advanced.connect_timeout', 10);
+    $changed = TRUE;
+  }
+
+  if ($config->get('advanced.streaming_timeout') === NULL) {
+    $config->set('advanced.streaming_timeout', 60);
+    $changed = TRUE;
+  }
+
+  if ($config->get('advanced.enable_logging') === NULL) {
+    $config->set('advanced.enable_logging', FALSE);
     $changed = TRUE;
   }
 

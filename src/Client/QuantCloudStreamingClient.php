@@ -62,6 +62,8 @@ class QuantCloudStreamingClient extends QuantCloudClient {
       'stream' => TRUE,
       'timeout' => $config->get('advanced.streaming_timeout')
         ?? self::DEFAULT_STREAMING_TIMEOUT,
+      'connect_timeout' => $config->get('advanced.connect_timeout')
+        ?? self::DEFAULT_CONNECT_TIMEOUT,
     ];
     
     try {
@@ -136,6 +138,8 @@ class QuantCloudStreamingClient extends QuantCloudClient {
       'stream' => TRUE,
       'timeout' => $config->get('advanced.streaming_timeout')
         ?? self::DEFAULT_STREAMING_TIMEOUT,
+      'connect_timeout' => $config->get('advanced.connect_timeout')
+        ?? self::DEFAULT_CONNECT_TIMEOUT,
     ];
     
     try {
