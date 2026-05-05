@@ -135,6 +135,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
         'manual' => $this->t('Manual Token - Copy/paste from dashboard'),
       ],
       '#description' => $this->t('OAuth is recommended for automatic token management and refresh.'),
+      '#weight' => 10,
     ];
 
     // Token validation status
@@ -147,6 +148,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
           '#markup' => '<div class="messages messages--status">' . $this->t(
             '✅ <strong>Token Valid:</strong> Your access token is working correctly and has been validated against the API.'
           ) . '</div>',
+          '#weight' => 20,
         ];
       }
       else {
@@ -155,6 +157,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
           '#markup' => '<div class="messages messages--error">' . $this->t(
             '❌ <strong>Token Invalid:</strong> Your access token could not be validated. Please check your configuration or generate a new token.'
           ) . '</div>',
+          '#weight' => 20,
         ];
       }
     }
@@ -166,6 +169,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
       '#attributes' => [
         'class' => ['ai-provider-quant-cloud-manual-token-help'],
       ],
+      '#weight' => 30,
       '#states' => [
         'visible' => [
           ':input[name="auth_method"]' => ['value' => 'manual'],
@@ -177,7 +181,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
       '#type' => 'markup',
       '#markup' => '<div class="ai-provider-quant-cloud-manual-token-help__content">' . $this->t(
         '<ol>
-        <li>Log in to your <a href="@quantcdn" target="_blank">QuantCDN</a> or <a href="@quantgov" target="_blank">QuantGov</a> dashboard</li>
+        <li>Log in to your <a href="@quantcdn" target="_blank" rel="noopener noreferrer">QuantCDN</a> or <a href="@quantgov" target="_blank" rel="noopener noreferrer">QuantGov</a> dashboard</li>
         <li>Go to <strong>Profile → Create Token</strong></li>
         <li>Configure the token\'s organizations, permissions, and expiration</li>
         <li>Copy the generated token</li>
@@ -214,6 +218,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
           ':input[name="auth_method"]' => ['value' => 'manual'],
         ],
       ],
+      '#weight' => 40,
     ];
 
     // Fetch available organizations if token is configured
@@ -246,6 +251,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
         ? $this->t('Select your Quant Cloud organization.')
         : $this->t('Your Quant Cloud organization identifier (e.g., "test-org"). Connect via OAuth or configure an access token to see available organizations.'),
       '#required' => TRUE,
+      '#weight' => 50,
     ];
 
     $form['model_section'] = [
