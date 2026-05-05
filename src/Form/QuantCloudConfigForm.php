@@ -145,7 +145,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
       if ($token_valid) {
         $form['auth_section']['token_status'] = [
           '#type' => 'markup',
-          '#markup' => '<div class="messages messages--status">' . $this->t(
+          '#markup' => '<div class="messages messages--status ai-provider-quant-cloud-token-status">' . $this->t(
             '✅ <strong>Token Valid:</strong> Your access token is working correctly and has been validated against the API.'
           ) . '</div>',
           '#weight' => 20,
@@ -154,7 +154,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
       else {
         $form['auth_section']['token_status'] = [
           '#type' => 'markup',
-          '#markup' => '<div class="messages messages--error">' . $this->t(
+          '#markup' => '<div class="messages messages--error ai-provider-quant-cloud-token-status">' . $this->t(
             '❌ <strong>Token Invalid:</strong> Your access token could not be validated. Please check your configuration or generate a new token.'
           ) . '</div>',
           '#weight' => 20,

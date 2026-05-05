@@ -25,6 +25,13 @@
   font-size: 0.9em;
 }
 
+.messages.messages--status.ai-provider-quant-cloud-token-status,
+.messages.messages--status.ai-provider-quant-cloud-token-status strong {
+  --messages-fg-color: #fff;
+
+  color: #fff;
+}
+
 details.ai-provider-quant-cloud-manual-token-help,
 .claro-details.ai-provider-quant-cloud-manual-token-help {
   color: #fff;
@@ -65,6 +72,13 @@ details.ai-provider-quant-cloud-manual-token-help .claro-details__summary::befor
   .ai-provider-quant-cloud-oauth-connect__button {
     color: ButtonText;
     background-color: ButtonFace;
+  }
+
+  .messages.messages--status.ai-provider-quant-cloud-token-status,
+  .messages.messages--status.ai-provider-quant-cloud-token-status strong {
+    --messages-fg-color: CanvasText;
+
+    color: CanvasText;
   }
 
   details.ai-provider-quant-cloud-manual-token-help .claro-details__summary,
