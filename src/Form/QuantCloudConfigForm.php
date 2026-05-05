@@ -2,6 +2,7 @@
 
 namespace Drupal\ai_provider_quant_cloud\Form;
 
+use Drupal\ai_provider_quant_cloud\Client\QuantCloudClient;
 use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\key\KeyRepositoryInterface;
@@ -251,7 +252,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
     $form['model_section']['default_model'] = [
       '#type' => 'select',
       '#title' => $this->t('Default Model'),
-      '#default_value' => $config->get('model.default') ?: 'amazon.nova-lite-v1:0',
+      '#default_value' => $config->get('model.default')
+        ?: QuantCloudClient::DEFAULT_MODEL,
       '#options' => $this->getAvailableModels(),
       '#description' => $this->t('The default AI model to use for requests.'),
     ];
@@ -259,7 +261,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
     $form['model_section']['temperature'] = [
       '#type' => 'number',
       '#title' => $this->t('Temperature'),
-      '#default_value' => $config->get('model.temperature') ?: 0.7,
+      '#default_value' => $config->get('model.temperature')
+        ?: QuantCloudClient::DEFAULT_TEMPERATURE,
       '#min' => 0,
       '#max' => 1,
       '#step' => 0.1,
@@ -269,7 +272,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
     $form['model_section']['max_tokens'] = [
       '#type' => 'number',
       '#title' => $this->t('Max Tokens'),
-      '#default_value' => $config->get('model.max_tokens') ?: 1000,
+      '#default_value' => $config->get('model.max_tokens')
+        ?: QuantCloudClient::DEFAULT_MAX_TOKENS,
       '#min' => 1,
       '#max' => 8192,
       '#description' => $this->t('Maximum number of tokens in the response.'),
@@ -284,16 +288,37 @@ class QuantCloudConfigForm extends ConfigFormBase {
     $form['advanced_section']['timeout'] = [
       '#type' => 'number',
       '#title' => $this->t('Request Timeout'),
-      '#default_value' => $config->get('advanced.timeout') ?: 30,
+      '#default_value' => $config->get('advanced.timeout')
+        ?: QuantCloudClient::DEFAULT_TIMEOUT,
       '#min' => 5,
       '#max' => 300,
       '#description' => $this->t('HTTP timeout in seconds for regular requests.'),
     ];
 
+    $form['advanced_section']['connect_timeout'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Connection Timeout'),
+      '#default_value' => $config->get('advanced.connect_timeout')
+        ?: QuantCloudClient::DEFAULT_CONNECT_TIMEOUT,
+      '#min' => 1,
+      '#max' => 60,
+      '#description' => $this->t('HTTP connection timeout in seconds.'),
+    ];
+
+    $form['advanced_section']['streaming_timeout'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Streaming Request Timeout'),
+      '#default_value' => $config->get('advanced.streaming_timeout')
+        ?: QuantCloudClient::DEFAULT_STREAMING_TIMEOUT,
+      '#min' => 5,
+      '#max' => 300,
+      '#description' => $this->t('HTTP timeout in seconds for streaming requests.'),
+    ];
+
     $form['advanced_section']['enable_logging'] = [
       '#type' => 'checkbox',
       '#title' => $this->t('Enable Logging'),
-      '#default_value' => $config->get('advanced.enable_logging') ?? TRUE,
+      '#default_value' => $config->get('advanced.enable_logging') ?? FALSE,
       '#description' => $this->t('Log API requests and responses for debugging.'),
     ];
 
@@ -313,6 +338,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
       ->set('model.temperature', $form_state->getValue('temperature'))
       ->set('model.max_tokens', $form_state->getValue('max_tokens'))
       ->set('advanced.timeout', $form_state->getValue('timeout'))
+      ->set('advanced.connect_timeout', $form_state->getValue('connect_timeout'))
+      ->set('advanced.streaming_timeout', $form_state->getValue('streaming_timeout'))
       ->set('advanced.enable_logging', $form_state->getValue('enable_logging'))
       ->save();
 

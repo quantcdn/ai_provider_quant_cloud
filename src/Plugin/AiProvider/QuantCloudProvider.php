@@ -303,6 +303,18 @@ class QuantCloudProvider extends AiProviderClientBase implements
       $options['systemPrompt'] = $input->getSystemRole();
     }
 
+    if (
+      !empty($this->configuration['http_client_options'])
+      && is_array($this->configuration['http_client_options'])
+    ) {
+      $http_options = $this->configuration['http_client_options'];
+      foreach (['timeout', 'connect_timeout'] as $request_option) {
+        if (isset($http_options[$request_option])) {
+          $options[$request_option] = $http_options[$request_option];
+        }
+      }
+    }
+
     try {
       // Check if streaming is requested (set by base class from UI checkbox)
       $use_streaming = $this->streamed ?? FALSE;
@@ -337,7 +349,18 @@ class QuantCloudProvider extends AiProviderClientBase implements
           $role = 'assistant';
           $tool_use_data = $response_data['toolUse'] ?? NULL;
         }
-        
+
+        $this->logPotentialChatFailure(
+          $response_data,
+          $model_id,
+          (int) ($options['maxTokens']
+            ?? $this->getConfig()->get('model.max_tokens')
+            ?? QuantCloudClient::DEFAULT_MAX_TOKENS),
+          !empty($options['toolConfig']),
+          $content,
+          $tool_use_data
+        );
+
         // Create ChatMessage for the response
         $message = new ChatMessage($role, $content);
 
@@ -384,6 +407,201 @@ class QuantCloudProvider extends AiProviderClientBase implements
     catch (\Exception $e) {
       throw new \RuntimeException('Chat request failed: ' . $e->getMessage(), 0, $e);
     }
+  }
+
+  /**
+   * Log likely silent chat failures without recording generated content.
+   *
+   * @param array $response_data
+   *   The raw response data.
+   * @param string $model_id
+   *   The requested model ID.
+   * @param int $max_tokens
+   *   The configured response token limit.
+   * @param bool $tools_requested
+   *   TRUE when the request included tool configuration.
+   * @param mixed $content
+   *   Response content.
+   * @param mixed $tool_use_data
+   *   Tool use response data.
+   */
+  protected function logPotentialChatFailure(
+    array $response_data,
+    string $model_id,
+    int $max_tokens,
+    bool $tools_requested,
+    mixed $content,
+    mixed $tool_use_data,
+  ): void {
+    $output_tokens = $this->getOutputTokenCount($response_data);
+    $stop_reason = $this->getStopReason($response_data);
+
+    // These warnings intentionally bypass the verbose logging flag. They
+    // surface probable response failures, not routine request/response logs.
+    if (
+      $this->isLikelyTokenLimited($stop_reason, $output_tokens, $max_tokens)
+    ) {
+      $this->logger->warning(
+        'Quant Cloud chat response reached the configured max token limit. '
+        . 'Increase model.max_tokens if the response was incomplete. '
+        . 'Model: @model, max tokens: @max_tokens, output tokens: '
+        . '@output_tokens, stop reason: @stop_reason.',
+        [
+          '@model' => $model_id,
+          '@max_tokens' => $max_tokens,
+          '@output_tokens' => $output_tokens,
+          '@stop_reason' => $stop_reason ?? 'unknown',
+        ]
+      );
+    }
+
+    if (
+      $tools_requested
+      && $this->isEmptyResponseContent($content)
+      && empty($tool_use_data)
+    ) {
+      $this->logger->warning(
+        'Quant Cloud returned an empty chat response with no tool calls for '
+        . 'a tool-enabled request. Model: @model, stop reason: '
+        . '@stop_reason, output tokens: @output_tokens.',
+        [
+          '@model' => $model_id,
+          '@stop_reason' => $stop_reason ?? 'unknown',
+          '@output_tokens' => $output_tokens,
+        ]
+      );
+    }
+  }
+
+  /**
+   * Determine whether response content is empty.
+   *
+   * @param mixed $content
+   *   Response content.
+   *
+   * @return bool
+   *   TRUE when no textual content is present.
+   */
+  protected function isEmptyResponseContent(mixed $content): bool {
+    if (is_string($content)) {
+      return $content === '';
+    }
+
+    if (!is_array($content)) {
+      return $content === NULL;
+    }
+
+    foreach ($content as $item) {
+      if (is_string($item) && $item !== '') {
+        return FALSE;
+      }
+      if (
+        is_array($item)
+        && isset($item['text'])
+        && is_string($item['text'])
+        && $item['text'] !== ''
+      ) {
+        return FALSE;
+      }
+    }
+
+    return TRUE;
+  }
+
+  /**
+   * Determine whether a response likely stopped because of the token limit.
+   *
+   * @param string|null $stop_reason
+   *   The response stop reason.
+   * @param int $output_tokens
+   *   The reported output token count.
+   * @param int $max_tokens
+   *   The configured response token limit.
+   *
+   * @return bool
+   *   TRUE when the response likely hit the token limit.
+   */
+  protected function isLikelyTokenLimited(
+    ?string $stop_reason,
+    int $output_tokens,
+    int $max_tokens,
+  ): bool {
+    if ($max_tokens <= 0) {
+      return FALSE;
+    }
+
+    $normalized_stop_reason = $stop_reason !== NULL
+      ? strtolower($stop_reason)
+      : NULL;
+
+    $token_limit_reasons = [
+      'length',
+      'max_token',
+      'max_tokens',
+      'model_length',
+      'token_limit',
+    ];
+    if (in_array($normalized_stop_reason, $token_limit_reasons, TRUE)) {
+      return TRUE;
+    }
+
+    $complete_reasons = [
+      'complete',
+      'completed',
+      'end_turn',
+      'finished',
+      'stop',
+      'stop_sequence',
+      'tool_calls',
+      'tool_use',
+    ];
+    if (in_array($normalized_stop_reason, $complete_reasons, TRUE)) {
+      return FALSE;
+    }
+
+    return $output_tokens >= $max_tokens;
+  }
+
+  /**
+   * Extract output token count from common response shapes.
+   *
+   * @param array $response_data
+   *   The raw response data.
+   *
+   * @return int
+   *   The output token count, or 0 when unavailable.
+   */
+  protected function getOutputTokenCount(array $response_data): int {
+    $usage = $response_data['usage']
+      ?? $response_data['response']['usage']
+      ?? $response_data['metadata']['usage']
+      ?? [];
+
+    if (!is_array($usage)) {
+      return 0;
+    }
+
+    return (int) ($usage['outputTokens']
+      ?? $usage['output_tokens']
+      ?? $usage['completion_tokens']
+      ?? 0);
+  }
+
+  /**
+   * Extract the model stop reason from common response shapes.
+   *
+   * @param array $response_data
+   *   The raw response data.
+   *
+   * @return string|null
+   *   The stop reason, or NULL when unavailable.
+   */
+  protected function getStopReason(array $response_data): ?string {
+    return $response_data['stopReason']
+      ?? $response_data['stop_reason']
+      ?? $response_data['response']['stopReason']
+      ?? $response_data['response']['stop_reason']
+      ?? NULL;
   }
 
   /**
