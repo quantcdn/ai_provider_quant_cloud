@@ -342,8 +342,6 @@ class QuantCloudClient {
    * This is a placeholder for future implementation.
    */
   public function embeddings(string $text, string $model_id, array $options = []): array {
-    $config = $this->getConfig();
-    
     $data = [
       'input' => $text,
       'modelId' => $model_id,

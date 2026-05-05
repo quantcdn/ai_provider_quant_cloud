@@ -226,8 +226,6 @@ class QuantCloudStreamingClient extends QuantCloudClient {
    * completion endpoint. Converts prompt to chat message format.
    */
   public function completeStream(string $prompt, string $model_id, callable $callback, array $options = []): array {
-    $config = $this->getConfig();
-    
     // Convert text-to-text to chat message format
     $messages = [
       [
