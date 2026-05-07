@@ -146,8 +146,6 @@ class QuantCloudConfigForm extends ConfigFormBase {
             'ai-provider-quant-cloud-oauth-connect__button',
           ],
         ],
-        '#prefix' => '<p>',
-        '#suffix' => '</p>',
       ];
       $form['auth_section']['oauth_connect']['note'] = [
         '#type' => 'html_tag',
@@ -213,22 +211,29 @@ class QuantCloudConfigForm extends ConfigFormBase {
     ];
 
     $form['auth_section']['manual_token_help']['content'] = [
-      '#type' => 'markup',
-      '#markup' => '<div class="ai-provider-quant-cloud-manual-token-help__content">' . $this->t(
-        '<ol>
-        <li>Log in to your <a href="@quantcdn" target="_blank" rel="noopener noreferrer">QuantCDN</a> or <a href="@quantgov" target="_blank" rel="noopener noreferrer">QuantGov</a> dashboard</li>
-        <li>Go to <strong>Profile &rarr; Create Token</strong></li>
-        <li>Configure the token\'s organizations, permissions, and expiration</li>
-        <li>Copy the generated token</li>
-        <li>In Drupal, go to <a href=":keys_url">Configuration &rarr; Keys</a></li>
-        <li>Create a new key with the token value</li>
-        <li>Return here and select that key above</li>
-        </ol>', [
-          '@quantcdn' => 'https://dashboard.quantcdn.io',
-          '@quantgov' => 'https://dash.quantgov.cloud',
-          ':keys_url' => Url::fromRoute('entity.key.collection')->toString(),
-        ]
-      ) . '</div>',
+      '#type' => 'html_tag',
+      '#tag' => 'div',
+      '#attributes' => [
+        'class' => ['ai-provider-quant-cloud-manual-token-help__content'],
+      ],
+      'steps' => [
+        '#theme' => 'item_list',
+        '#list_type' => 'ol',
+        '#items' => [
+          $this->t('Log in to your <a href="@quantcdn" target="_blank" rel="noopener noreferrer">QuantCDN</a> or <a href="@quantgov" target="_blank" rel="noopener noreferrer">QuantGov</a> dashboard', [
+            '@quantcdn' => 'https://dashboard.quantcdn.io',
+            '@quantgov' => 'https://dash.quantgov.cloud',
+          ]),
+          $this->t('Go to <strong>Profile &rarr; Create Token</strong>'),
+          $this->t("Configure the token's organizations, permissions, and expiration"),
+          $this->t('Copy the generated token'),
+          $this->t('In Drupal, go to <a href=":keys_url">Configuration &rarr; Keys</a>', [
+            ':keys_url' => Url::fromRoute('entity.key.collection')->toString(),
+          ]),
+          $this->t('Create a new key with the token value'),
+          $this->t('Return here and select that key above'),
+        ],
+      ],
     ];
 
     // Get available keys
