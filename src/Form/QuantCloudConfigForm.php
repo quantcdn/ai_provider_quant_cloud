@@ -95,7 +95,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
 
     // Check if already OAuth connected
     $is_oauth_connected = $config->get('auth.method') === 'oauth' && $config->get('auth.access_token_key');
-
+    
     if ($is_oauth_connected) {
       $form['auth_section']['oauth_status'] = [
         '#type' => 'html_tag',
@@ -112,7 +112,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
           '#plain_text' => ' ' . $this->t('You are authenticated with Quant Cloud using OAuth2. Your access token will automatically refresh when needed.'),
         ],
       ];
-
+      
       $form['auth_section']['oauth_disconnect'] = [
         '#type' => 'link',
         '#title' => $this->t('Disconnect from Quant Cloud'),
@@ -180,7 +180,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
     // Token validation status
     if ($form_state->getValue('access_token_key') || $config->get('auth.access_token_key')) {
       $token_valid = $this->authService->validateToken();
-
+      
       if ($token_valid) {
         $form['auth_section']['token_status'] = [
           '#type' => 'html_tag',
@@ -270,7 +270,19 @@ class QuantCloudConfigForm extends ConfigFormBase {
             '@quantcdn' => 'https://dashboard.quantcdn.io',
             '@quantgov' => 'https://dash.quantgov.cloud',
           ]),
-          $this->t('Go to <strong>Profile &rarr; Create Token</strong>'),
+          [
+            '#type' => 'container',
+            'go_to_prefix' => [
+              '#type' => 'html_tag',
+              '#tag' => 'span',
+              '#value' => $this->t('Go to '),
+            ],
+            'menu_path' => [
+              '#type' => 'html_tag',
+              '#tag' => 'strong',
+              '#value' => $this->t('Profile &rarr; Create Token'),
+            ],
+          ],
           $this->t("Configure the token's organizations, permissions, and expiration"),
           $this->t('Copy the generated token'),
           $this->t('In Drupal, go to <a href=":keys_url">Configuration &rarr; Keys</a>', [
@@ -311,30 +323,30 @@ class QuantCloudConfigForm extends ConfigFormBase {
     // Fetch available organizations if token is configured
     $org_options = ['' => $this->t('- Select an organization -')];
     $has_orgs = FALSE;
-
+    
     if ($config->get('auth.access_token_key') || $config->get('auth.method') === 'oauth') {
       $organizations = $this->authService->getOrganizations();
-
+      
       if (!empty($organizations)) {
         $has_orgs = TRUE;
         foreach ($organizations as $org) {
           $machine_name = $org['machine_name'] ?? $org['name'] ?? '';
           $org_name = $org['name'] ?? $machine_name;
           if ($machine_name) {
-            $org_options[$machine_name] = $machine_name === $org_name
-              ? $org_name
+            $org_options[$machine_name] = $machine_name === $org_name 
+              ? $org_name 
               : $org_name . ' (' . $machine_name . ')';
           }
         }
       }
     }
-
+    
     $form['auth_section']['organization_id'] = [
       '#type' => $has_orgs ? 'select' : 'textfield',
       '#title' => $this->t('Organization'),
       '#options' => $has_orgs ? $org_options : NULL,
       '#default_value' => $config->get('auth.organization_id'),
-      '#description' => $has_orgs
+      '#description' => $has_orgs 
         ? $this->t('Select your Quant Cloud organization.')
         : $this->t('Your Quant Cloud organization identifier (e.g., "test-org"). Connect via OAuth or configure an access token to see available organizations.'),
       '#required' => TRUE,
@@ -451,23 +463,23 @@ class QuantCloudConfigForm extends ConfigFormBase {
     try {
       // Fetch chat models from the API (excluding embeddings)
       $models = $this->modelsService->getModels('chat');
-
+      
       $options = [];
       foreach ($models as $model) {
         $model_id = $model['id'] ?? NULL;
         $model_name = $model['name'] ?? $model_id;
         $provider = $model['provider'] ?? '';
-
+        
         if ($model_id) {
           $options[$model_id] = $model_name . ($provider ? " ({$provider})" : '');
         }
       }
-
+      
       // If we got models from the API, return them
       if (!empty($options)) {
         return $options;
       }
-
+      
     }
     catch (\Exception $e) {
       $this->messenger()->addWarning(
@@ -476,7 +488,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
         ])
       );
     }
-
+    
     // Fallback to minimal list if API is not configured yet or fails
     return [
       'amazon.nova-lite-v1:0' => $this->t('Amazon Nova Lite'),
