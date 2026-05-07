@@ -95,16 +95,24 @@ class QuantCloudConfigForm extends ConfigFormBase {
 
     // Check if already OAuth connected
     $is_oauth_connected = $config->get('auth.method') === 'oauth' && $config->get('auth.access_token_key');
-    
+
     if ($is_oauth_connected) {
       $form['auth_section']['oauth_status'] = [
-        '#type' => 'markup',
-        '#markup' => '<div class="messages messages--status"><strong>' .
-          $this->t('Connected via OAuth:') . '</strong> ' .
-          $this->t('You are authenticated with Quant Cloud using OAuth2. Your access token will automatically refresh when needed.') .
-          '</div>',
+        '#type' => 'html_tag',
+        '#tag' => 'div',
+        '#attributes' => [
+          'class' => ['messages', 'messages--status'],
+        ],
+        'label' => [
+          '#type' => 'html_tag',
+          '#tag' => 'strong',
+          '#value' => $this->t('Connected via OAuth:'),
+        ],
+        'message' => [
+          '#plain_text' => ' ' . $this->t('You are authenticated with Quant Cloud using OAuth2. Your access token will automatically refresh when needed.'),
+        ],
       ];
-      
+
       $form['auth_section']['oauth_disconnect'] = [
         '#type' => 'link',
         '#title' => $this->t('Disconnect from Quant Cloud'),
@@ -172,25 +180,63 @@ class QuantCloudConfigForm extends ConfigFormBase {
     // Token validation status
     if ($form_state->getValue('access_token_key') || $config->get('auth.access_token_key')) {
       $token_valid = $this->authService->validateToken();
-      
+
       if ($token_valid) {
         $form['auth_section']['token_status'] = [
-          '#type' => 'markup',
-          '#markup' => '<div class="messages messages--status ai-provider-quant-cloud-token-status"><span class="ai-provider-quant-cloud-token-status__message"><strong>' .
-            $this->t('Token Valid:') . '</strong> ' .
-            $this->t('Your access token is working correctly and has been validated against the API.') .
-            '</span></div>',
+          '#type' => 'html_tag',
+          '#tag' => 'div',
+          '#attributes' => [
+            'class' => [
+              'messages',
+              'messages--status',
+              'ai-provider-quant-cloud-token-status',
+            ],
+          ],
           '#weight' => 20,
+          'message' => [
+            '#type' => 'html_tag',
+            '#tag' => 'span',
+            '#attributes' => [
+              'class' => ['ai-provider-quant-cloud-token-status__message'],
+            ],
+            'label' => [
+              '#type' => 'html_tag',
+              '#tag' => 'strong',
+              '#value' => $this->t('Token Valid:'),
+            ],
+            'text' => [
+              '#plain_text' => ' ' . $this->t('Your access token is working correctly and has been validated against the API.'),
+            ],
+          ],
         ];
       }
       else {
         $form['auth_section']['token_status'] = [
-          '#type' => 'markup',
-          '#markup' => '<div class="messages messages--error ai-provider-quant-cloud-token-status"><span class="ai-provider-quant-cloud-token-status__message"><strong>' .
-            $this->t('Token Invalid:') . '</strong> ' .
-            $this->t('Your access token could not be validated. Please check your configuration or generate a new token.') .
-            '</span></div>',
+          '#type' => 'html_tag',
+          '#tag' => 'div',
+          '#attributes' => [
+            'class' => [
+              'messages',
+              'messages--error',
+              'ai-provider-quant-cloud-token-status',
+            ],
+          ],
           '#weight' => 20,
+          'message' => [
+            '#type' => 'html_tag',
+            '#tag' => 'span',
+            '#attributes' => [
+              'class' => ['ai-provider-quant-cloud-token-status__message'],
+            ],
+            'label' => [
+              '#type' => 'html_tag',
+              '#tag' => 'strong',
+              '#value' => $this->t('Token Invalid:'),
+            ],
+            'text' => [
+              '#plain_text' => ' ' . $this->t('Your access token could not be validated. Please check your configuration or generate a new token.'),
+            ],
+          ],
         ];
       }
     }
@@ -265,30 +311,30 @@ class QuantCloudConfigForm extends ConfigFormBase {
     // Fetch available organizations if token is configured
     $org_options = ['' => $this->t('- Select an organization -')];
     $has_orgs = FALSE;
-    
+
     if ($config->get('auth.access_token_key') || $config->get('auth.method') === 'oauth') {
       $organizations = $this->authService->getOrganizations();
-      
+
       if (!empty($organizations)) {
         $has_orgs = TRUE;
         foreach ($organizations as $org) {
           $machine_name = $org['machine_name'] ?? $org['name'] ?? '';
           $org_name = $org['name'] ?? $machine_name;
           if ($machine_name) {
-            $org_options[$machine_name] = $machine_name === $org_name 
-              ? $org_name 
+            $org_options[$machine_name] = $machine_name === $org_name
+              ? $org_name
               : $org_name . ' (' . $machine_name . ')';
           }
         }
       }
     }
-    
+
     $form['auth_section']['organization_id'] = [
       '#type' => $has_orgs ? 'select' : 'textfield',
       '#title' => $this->t('Organization'),
       '#options' => $has_orgs ? $org_options : NULL,
       '#default_value' => $config->get('auth.organization_id'),
-      '#description' => $has_orgs 
+      '#description' => $has_orgs
         ? $this->t('Select your Quant Cloud organization.')
         : $this->t('Your Quant Cloud organization identifier (e.g., "test-org"). Connect via OAuth or configure an access token to see available organizations.'),
       '#required' => TRUE,
@@ -405,23 +451,23 @@ class QuantCloudConfigForm extends ConfigFormBase {
     try {
       // Fetch chat models from the API (excluding embeddings)
       $models = $this->modelsService->getModels('chat');
-      
+
       $options = [];
       foreach ($models as $model) {
         $model_id = $model['id'] ?? NULL;
         $model_name = $model['name'] ?? $model_id;
         $provider = $model['provider'] ?? '';
-        
+
         if ($model_id) {
           $options[$model_id] = $model_name . ($provider ? " ({$provider})" : '');
         }
       }
-      
+
       // If we got models from the API, return them
       if (!empty($options)) {
         return $options;
       }
-      
+
     }
     catch (\Exception $e) {
       $this->messenger()->addWarning(
@@ -430,7 +476,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
         ])
       );
     }
-    
+
     // Fallback to minimal list if API is not configured yet or fails
     return [
       'amazon.nova-lite-v1:0' => $this->t('Amazon Nova Lite'),
@@ -439,4 +485,3 @@ class QuantCloudConfigForm extends ConfigFormBase {
   }
 
 }
-
