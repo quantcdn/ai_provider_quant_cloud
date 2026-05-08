@@ -1203,7 +1203,7 @@ class QuantCloudProvider extends AiProviderClientBase implements
       'amazon.titan-embed-text-v1' => 0,
     ];
 
-    return $limits[$model_id] ?? 4096;
+    return $limits[$model_id] ?? 16384;
   }
 
   /**

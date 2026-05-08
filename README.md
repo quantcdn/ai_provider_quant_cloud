@@ -93,7 +93,7 @@ Configure additional options in the "Advanced Settings" section:
   - Negative prompts for unwanted elements
 - **Model Parameters**:
   - Temperature (0.0 - 1.0)
-  - Max tokens (1 - 4096)
+  - Max tokens (1 - 65536)
   - Top P sampling
 
 ## Usage

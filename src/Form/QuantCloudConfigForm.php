@@ -388,7 +388,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
       '#default_value' => $config->get('model.max_tokens')
         ?: QuantCloudClient::DEFAULT_MAX_TOKENS,
       '#min' => 1,
-      '#max' => 8192,
+      '#max' => 65536,
       '#description' => $this->t('Maximum number of tokens in the response.'),
     ];
 

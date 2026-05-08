@@ -13,7 +13,7 @@ declare(strict_types=1);
 function ai_provider_quant_cloud_update_10001(): void {
   // Keep install hooks independent of runtime class autoloading.
   // These mirror QuantCloudClient::DEFAULT_MAX_TOKENS and DEFAULT_TIMEOUT.
-  $default_max_tokens = 4096;
+  $default_max_tokens = 16384;
   $default_timeout = 120;
 
   $config = \Drupal::configFactory()

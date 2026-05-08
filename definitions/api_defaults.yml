@@ -15,11 +15,11 @@ chat:
       label: 'Max Tokens'
       description: 'The maximum number of tokens to generate. Supported upper limits vary by model.'
       type: 'integer'
-      default: 4096
+      default: 16384
       required: false
       constraints:
         min: 1
-        max: 8192
+        max: 65536
     temperature:
       label: 'Temperature'
       description: 'Sampling temperature between 0 and 1. Higher values mean more random output.'
