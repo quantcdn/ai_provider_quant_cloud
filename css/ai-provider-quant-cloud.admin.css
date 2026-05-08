@@ -47,10 +47,13 @@ details.ai-provider-quant-cloud-manual-token-help > summary:focus,
 details.ai-provider-quant-cloud-manual-token-help > summary:active,
 details.ai-provider-quant-cloud-manual-token-help[open] > summary,
 details.ai-provider-quant-cloud-manual-token-help[open] > summary:active,
-details.ai-provider-quant-cloud-manual-token-help[open] > summary:focus,
-details.ai-provider-quant-cloud-manual-token-help a {
+details.ai-provider-quant-cloud-manual-token-help[open] > summary:focus {
   /* !important needed to override admin theme styles that set explicit colors on summary elements. */
   color: #b3dff7 !important;
+}
+
+details.ai-provider-quant-cloud-manual-token-help a {
+  color: #b3dff7;
 }
 
 /* Native browser disclosure triangle (used by Gin and other themes). */
@@ -60,7 +63,7 @@ details.ai-provider-quant-cloud-manual-token-help > summary::marker {
 
 /* Some themes render the disclosure caret as a summary::before background-image; no effect in others. */
 details.ai-provider-quant-cloud-manual-token-help > summary::before {
-  filter: brightness(0) invert(82%) sepia(30%) saturate(500%) hue-rotate(180deg) !important;
+  filter: brightness(0) invert(82%) sepia(30%) saturate(500%) hue-rotate(180deg);
 }
 
 .ai-provider-quant-cloud-manual-token-help__content {
@@ -89,6 +92,14 @@ details.ai-provider-quant-cloud-manual-token-help > summary::before {
   details.ai-provider-quant-cloud-manual-token-help[open] > summary:focus,
   .ai-provider-quant-cloud-manual-token-help__content {
     color: CanvasText !important;
+  }
+
+  details.ai-provider-quant-cloud-manual-token-help > summary::before {
+    filter: none;
+  }
+
+  details.ai-provider-quant-cloud-manual-token-help > summary::marker {
+    color: CanvasText;
   }
 
   details.ai-provider-quant-cloud-manual-token-help a {
