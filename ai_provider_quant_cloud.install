@@ -51,3 +51,16 @@ function ai_provider_quant_cloud_update_10001(): void {
     $config->save(TRUE);
   }
 }
+
+/**
+ * Raise default max tokens from 4096 to 16384 for tool-use payloads.
+ */
+function ai_provider_quant_cloud_update_10002(): void {
+  $config = \Drupal::configFactory()
+    ->getEditable('ai_provider_quant_cloud.settings');
+
+  $max_tokens = (int) $config->get('model.max_tokens');
+  if ($max_tokens <= 4096) {
+    $config->set('model.max_tokens', 16384)->save(TRUE);
+  }
+}
