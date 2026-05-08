@@ -4,8 +4,8 @@
  */
 
 .ai-provider-quant-cloud-oauth-connect {
-  background: var(--color-gray-050);
-  border: 2px solid var(--color-absolutezero);
+  background: var(--color-gray-050, #f3f4f9);
+  border: 2px solid var(--color-absolutezero, #003cc5);
   border-radius: 8px;
   margin: 15px 0;
   padding: 20px;
@@ -16,7 +16,7 @@
 }
 
 .ai-provider-quant-cloud-oauth-connect__button {
-  background: var(--color-absolutezero);
+  background: var(--color-absolutezero, #003cc5);
   border-radius: 6px;
   color: #fff;
   display: inline-block;
@@ -26,12 +26,12 @@
 }
 
 .ai-provider-quant-cloud-oauth-connect__button:focus-visible {
-  outline: 3px solid var(--color-gray-800);
+  outline: 3px solid var(--color-gray-800, #232429);
   outline-offset: 2px;
 }
 
 .ai-provider-quant-cloud-oauth-connect__note {
-  color: var(--color-gray-800);
+  color: var(--color-gray-800, #232429);
   font-size: 0.9em;
 }
 
