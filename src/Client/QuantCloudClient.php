@@ -4,7 +4,7 @@ namespace Drupal\ai_provider_quant_cloud\Client;
 
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
-use Drupal\key\KeyRepositoryInterface;
+use Drupal\ai_provider_quant_cloud\Service\AuthService;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
 
@@ -70,11 +70,11 @@ class QuantCloudClient {
   protected $logger;
 
   /**
-   * The key repository.
+   * The auth service.
    *
-   * @var \Drupal\key\KeyRepositoryInterface
+   * @var \Drupal\ai_provider_quant_cloud\Service\AuthService
    */
-  protected $keyRepository;
+  protected $authService;
 
   /**
    * Constructs a QuantCloudClient.
@@ -83,12 +83,12 @@ class QuantCloudClient {
     ClientInterface $http_client,
     ConfigFactoryInterface $config_factory,
     LoggerChannelFactoryInterface $logger_factory,
-    KeyRepositoryInterface $key_repository
+    AuthService $auth_service
   ) {
     $this->httpClient = $http_client;
     $this->configFactory = $config_factory;
     $this->logger = $logger_factory->get('ai_provider_quant_cloud');
-    $this->keyRepository = $key_repository;
+    $this->authService = $auth_service;
   }
 
   /**
@@ -99,18 +99,10 @@ class QuantCloudClient {
   }
 
   /**
-   * Get access token from Key module.
+   * Get a currently-valid access token, refreshing it transparently if needed.
    */
   protected function getAccessToken(): ?string {
-    $config = $this->getConfig();
-    $key_id = $config->get('auth.access_token_key');
-    
-    if (!$key_id) {
-      return NULL;
-    }
-    
-    $key = $this->keyRepository->getKey($key_id);
-    return $key ? $key->getKeyValue() : NULL;
+    return $this->authService->getValidAccessToken();
   }
 
   /**

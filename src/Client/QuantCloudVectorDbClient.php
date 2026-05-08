@@ -4,7 +4,7 @@ namespace Drupal\ai_provider_quant_cloud\Client;
 
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
-use Drupal\key\KeyRepositoryInterface;
+use Drupal\ai_provider_quant_cloud\Service\AuthService;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
 use Psr\Log\LoggerInterface;
@@ -39,11 +39,11 @@ class QuantCloudVectorDbClient {
   protected LoggerInterface $logger;
 
   /**
-   * The key repository.
+   * The auth service.
    *
-   * @var \Drupal\key\KeyRepositoryInterface
+   * @var \Drupal\ai_provider_quant_cloud\Service\AuthService
    */
-  protected KeyRepositoryInterface $keyRepository;
+  protected AuthService $authService;
 
   /**
    * Constructs a QuantCloudVectorDbClient.
@@ -54,19 +54,19 @@ class QuantCloudVectorDbClient {
    *   The config factory.
    * @param \Drupal\Core\Logger\LoggerChannelFactoryInterface $logger_factory
    *   The logger factory.
-   * @param \Drupal\key\KeyRepositoryInterface $key_repository
-   *   The key repository.
+   * @param \Drupal\ai_provider_quant_cloud\Service\AuthService $auth_service
+   *   The auth service (provides access tokens with transparent refresh).
    */
   public function __construct(
     ClientInterface $http_client,
     ConfigFactoryInterface $config_factory,
     LoggerChannelFactoryInterface $logger_factory,
-    KeyRepositoryInterface $key_repository,
+    AuthService $auth_service,
   ) {
     $this->httpClient = $http_client;
     $this->configFactory = $config_factory;
     $this->logger = $logger_factory->get('ai_provider_quant_cloud');
-    $this->keyRepository = $key_repository;
+    $this->authService = $auth_service;
   }
 
   /**
@@ -80,21 +80,13 @@ class QuantCloudVectorDbClient {
   }
 
   /**
-   * Get access token from Key module.
+   * Get a currently-valid access token, refreshing it transparently if needed.
    *
    * @return string|null
-   *   The access token, or NULL if not configured.
+   *   The access token, or NULL if not configured / can't be refreshed.
    */
   protected function getAccessToken(): ?string {
-    $config = $this->getConfig();
-    $key_id = $config->get('auth.access_token_key');
-
-    if (!$key_id) {
-      return NULL;
-    }
-
-    $key = $this->keyRepository->getKey($key_id);
-    return $key ? $key->getKeyValue() : NULL;
+    return $this->authService->getValidAccessToken();
   }
 
   /**
