@@ -111,7 +111,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
         'space' => [
           '#plain_text' => ' ',
         ],
-        'message' => [
+        'text' => [
           '#plain_text' => $this->t(
             'You are authenticated with Quant Cloud using OAuth2. Your access token will automatically refresh when needed.'
           ),
@@ -197,32 +197,21 @@ class QuantCloudConfigForm extends ConfigFormBase {
           '#type' => 'html_tag',
           '#tag' => 'div',
           '#attributes' => [
-            'class' => [
-              'messages',
-              'messages--status',
-              'ai-provider-quant-cloud-token-status',
-            ],
+            'class' => ['messages', 'messages--status'],
           ],
           '#weight' => 20,
-          'message' => [
+          'label' => [
             '#type' => 'html_tag',
-            '#tag' => 'span',
-            '#attributes' => [
-              'class' => ['ai-provider-quant-cloud-token-status__message'],
-            ],
-            'label' => [
-              '#type' => 'html_tag',
-              '#tag' => 'strong',
-              '#value' => $this->t('Token Valid:'),
-            ],
-            'space' => [
-              '#plain_text' => ' ',
-            ],
-            'text' => [
-              '#plain_text' => $this->t(
-                'Your access token is working correctly and has been validated against the API.'
-              ),
-            ],
+            '#tag' => 'strong',
+            '#value' => $this->t('Token Valid:'),
+          ],
+          'space' => [
+            '#plain_text' => ' ',
+          ],
+          'text' => [
+            '#plain_text' => $this->t(
+              'Your access token is working correctly and has been validated against the API.'
+            ),
           ],
         ];
       }
@@ -231,32 +220,21 @@ class QuantCloudConfigForm extends ConfigFormBase {
           '#type' => 'html_tag',
           '#tag' => 'div',
           '#attributes' => [
-            'class' => [
-              'messages',
-              'messages--error',
-              'ai-provider-quant-cloud-token-status',
-            ],
+            'class' => ['messages', 'messages--error'],
           ],
           '#weight' => 20,
-          'message' => [
+          'label' => [
             '#type' => 'html_tag',
-            '#tag' => 'span',
-            '#attributes' => [
-              'class' => ['ai-provider-quant-cloud-token-status__message'],
-            ],
-            'label' => [
-              '#type' => 'html_tag',
-              '#tag' => 'strong',
-              '#value' => $this->t('Token Invalid:'),
-            ],
-            'space' => [
-              '#plain_text' => ' ',
-            ],
-            'text' => [
-              '#plain_text' => $this->t(
-                'Your access token could not be validated. Please check your configuration or generate a new token.'
-              ),
-            ],
+            '#tag' => 'strong',
+            '#value' => $this->t('Token Invalid:'),
+          ],
+          'space' => [
+            '#plain_text' => ' ',
+          ],
+          'text' => [
+            '#plain_text' => $this->t(
+              'Your access token could not be validated. Please check your configuration or generate a new token.'
+            ),
           ],
         ];
       }
@@ -313,7 +291,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
             [':keys_url' => Url::fromRoute('entity.key.collection')->toString()]
           ),
           $this->t('Create a new key with the token value'),
-          $this->t('Return here and select that key above'),
+          $this->t('Return here and select that key below'),
         ],
       ],
     ];
@@ -522,3 +500,4 @@ class QuantCloudConfigForm extends ConfigFormBase {
   }
 
 }
+

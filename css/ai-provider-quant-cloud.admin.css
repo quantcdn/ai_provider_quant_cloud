@@ -35,50 +35,41 @@
   font-size: 0.9em;
 }
 
-.messages.ai-provider-quant-cloud-token-status {
-  --messages-fg-color: #fff;
-
-  background-color: var(--messages-bg-color, #353641);
-  color: #fff;
-}
-
-.messages.ai-provider-quant-cloud-token-status .ai-provider-quant-cloud-token-status__message,
-.messages.ai-provider-quant-cloud-token-status .ai-provider-quant-cloud-token-status__message strong {
-  color: #fff;
-}
-
-details.ai-provider-quant-cloud-manual-token-help,
-.claro-details.ai-provider-quant-cloud-manual-token-help {
+details.ai-provider-quant-cloud-manual-token-help {
   background-color: #0f3447;
   border-color: #2b7dbd;
-  color: #fff;
+  color: #b3dff7;
 }
 
-details.ai-provider-quant-cloud-manual-token-help .claro-details__summary,
-details.ai-provider-quant-cloud-manual-token-help .claro-details__summary:hover,
-details.ai-provider-quant-cloud-manual-token-help .claro-details__summary:focus,
-details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary,
-details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:active,
-details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:focus,
-.claro-details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:active,
-.claro-details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:focus,
-details.ai-provider-quant-cloud-manual-token-help .claro-details__summary-summary,
+details.ai-provider-quant-cloud-manual-token-help > summary,
+details.ai-provider-quant-cloud-manual-token-help > summary:hover,
+details.ai-provider-quant-cloud-manual-token-help > summary:focus,
+details.ai-provider-quant-cloud-manual-token-help > summary:active,
+details.ai-provider-quant-cloud-manual-token-help[open] > summary,
+details.ai-provider-quant-cloud-manual-token-help[open] > summary:active,
+details.ai-provider-quant-cloud-manual-token-help[open] > summary:focus,
 details.ai-provider-quant-cloud-manual-token-help a {
-  color: #fff;
+  /* !important overrides the explicit color Claro/Gin set on child spans inside summary. */
+  color: #b3dff7 !important;
 }
 
-details.ai-provider-quant-cloud-manual-token-help .claro-details__summary::before {
-  filter: brightness(0) invert(1);
+/* Native browser disclosure triangle (used by Gin and other themes). */
+details.ai-provider-quant-cloud-manual-token-help > summary::marker {
+  color: #b3dff7;
+}
+
+/* Claro custom caret SVG rendered as a pseudo-element background image. */
+details.ai-provider-quant-cloud-manual-token-help > summary::before {
+  filter: brightness(0) invert(82%) sepia(30%) saturate(500%) hue-rotate(180deg) !important;
 }
 
 .ai-provider-quant-cloud-manual-token-help__content {
-  color: #fff;
+  color: #b3dff7;
 }
 
 @media (forced-colors: active) {
   .ai-provider-quant-cloud-oauth-connect,
-  details.ai-provider-quant-cloud-manual-token-help,
-  .claro-details.ai-provider-quant-cloud-manual-token-help {
+  details.ai-provider-quant-cloud-manual-token-help {
     background-color: Canvas;
     border-color: CanvasText;
     color: CanvasText;
@@ -89,30 +80,15 @@ details.ai-provider-quant-cloud-manual-token-help .claro-details__summary::befor
     color: ButtonText;
   }
 
-  .messages.ai-provider-quant-cloud-token-status {
-    --messages-fg-color: CanvasText;
-
-    background-color: Canvas;
-    color: CanvasText;
-  }
-
-  .messages.ai-provider-quant-cloud-token-status .ai-provider-quant-cloud-token-status__message,
-  .messages.ai-provider-quant-cloud-token-status .ai-provider-quant-cloud-token-status__message strong {
-    color: CanvasText;
-  }
-
-  details.ai-provider-quant-cloud-manual-token-help .claro-details__summary,
-  details.ai-provider-quant-cloud-manual-token-help .claro-details__summary:hover,
-  details.ai-provider-quant-cloud-manual-token-help .claro-details__summary:focus,
-  details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary,
-  details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:active,
-  details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:focus,
-  .claro-details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:active,
-  .claro-details.ai-provider-quant-cloud-manual-token-help[open] > .claro-details__summary:focus,
-  details.ai-provider-quant-cloud-manual-token-help .claro-details__summary-summary,
-  details.ai-provider-quant-cloud-manual-token-help a,
+  details.ai-provider-quant-cloud-manual-token-help > summary,
+  details.ai-provider-quant-cloud-manual-token-help > summary:hover,
+  details.ai-provider-quant-cloud-manual-token-help > summary:focus,
+  details.ai-provider-quant-cloud-manual-token-help > summary:active,
+  details.ai-provider-quant-cloud-manual-token-help[open] > summary,
+  details.ai-provider-quant-cloud-manual-token-help[open] > summary:active,
+  details.ai-provider-quant-cloud-manual-token-help[open] > summary:focus,
   .ai-provider-quant-cloud-manual-token-help__content {
-    color: CanvasText;
+    color: CanvasText !important;
   }
 
   details.ai-provider-quant-cloud-manual-token-help a {
