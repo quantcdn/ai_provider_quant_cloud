@@ -49,7 +49,7 @@ details.ai-provider-quant-cloud-manual-token-help[open] > summary,
 details.ai-provider-quant-cloud-manual-token-help[open] > summary:active,
 details.ai-provider-quant-cloud-manual-token-help[open] > summary:focus,
 details.ai-provider-quant-cloud-manual-token-help a {
-  /* !important overrides the explicit color Claro/Gin set on child spans inside summary. */
+  /* !important needed to override admin theme styles that set explicit colors on summary elements. */
   color: #b3dff7 !important;
 }
 
@@ -58,7 +58,7 @@ details.ai-provider-quant-cloud-manual-token-help > summary::marker {
   color: #b3dff7;
 }
 
-/* Claro custom caret SVG rendered as a pseudo-element background image. */
+/* Some themes render the disclosure caret as a summary::before background-image; no effect in others. */
 details.ai-provider-quant-cloud-manual-token-help > summary::before {
   filter: brightness(0) invert(82%) sepia(30%) saturate(500%) hue-rotate(180deg) !important;
 }
