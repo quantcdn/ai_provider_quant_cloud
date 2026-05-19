@@ -445,7 +445,7 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
       $response = $this->vdbClient->uploadDocuments($collection_id, $documents);
 
       // Store ID mapping in state for later retrieval.
-      $document_ids = $response['documentIds'] ?? [];
+      $document_ids = $response['uploadedDocuments'][0]['documentIds'] ?? [];
       if (!empty($document_ids) && !empty($data['drupal_long_id'])) {
         $state_key = "ai_provider_quant_cloud.vdb_mapping.{$collection_name}";
         $mapping = \Drupal::state()->get($state_key, []);
@@ -620,7 +620,8 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
         $vector,
         $limit,
         0.0,
-        TRUE  // Include metadata
+      // Include metadata.
+        TRUE
       );
 
       // Map API response to expected format.
@@ -628,14 +629,15 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
       // - 'distance' for score (used by setScore(), skipped by extractMetadata())
       // - 'drupal_entity_id' for entity lookup
       // - 'id' for the full chunk ID (skipped by extractMetadata())
-      // - 'content' is added to extra data for display
+      // - 'content' is added to extra data for display.
       $results = [];
       foreach ($response['results'] ?? [] as $result) {
         $metadata = $result['metadata'] ?? [];
         $results[] = [
           'id' => $metadata['drupal_long_id'] ?? $result['documentId'],
           'drupal_entity_id' => $metadata['drupal_entity_id'] ?? NULL,
-          'distance' => $result['score'] ?? 0.0,  // Backend expects 'distance', not 'score'
+        // Backend expects 'distance', not 'score'.
+          'distance' => $result['score'] ?? 0.0,
           'content' => $result['content'] ?? '',
         ];
       }

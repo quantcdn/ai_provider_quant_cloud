@@ -2,6 +2,9 @@
 
 namespace Drupal\ai_provider_quant_cloud\Service;
 
+use Drupal\Core\Lock\LockBackendInterface;
+use Drupal\Core\State\StateInterface;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\key\KeyRepositoryInterface;
@@ -69,9 +72,9 @@ class AuthService {
     ConfigFactoryInterface $config_factory,
     LoggerChannelFactoryInterface $logger_factory,
     KeyRepositoryInterface $key_repository,
-    \Drupal\Core\Entity\EntityTypeManagerInterface $entity_type_manager,
-    \Drupal\Core\State\StateInterface $state,
-    \Drupal\Core\Lock\LockBackendInterface $lock
+    EntityTypeManagerInterface $entity_type_manager,
+    StateInterface $state,
+    LockBackendInterface $lock,
   ) {
     $this->httpClient = $http_client;
     $this->configFactory = $config_factory;
@@ -91,11 +94,11 @@ class AuthService {
   public function getAccessToken(): ?string {
     $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
     $key_id = $config->get('auth.access_token_key');
-    
+
     if (!$key_id) {
       return NULL;
     }
-    
+
     $key = $this->keyRepository->getKey($key_id);
     return $key ? $key->getKeyValue() : NULL;
   }
@@ -156,7 +159,8 @@ class AuthService {
         'machine_name' => $org['machine_name'] ?? '',
       ], array_values($orgs));
 
-    } catch (\Exception $e) {
+    }
+    catch (\Exception $e) {
       $this->logger->error('Error fetching user/orgs: @message', [
         '@message' => $e->getMessage(),
       ]);
@@ -263,9 +267,9 @@ class AuthService {
       ]);
 
       if ($response->getStatusCode() !== 200) {
-        $this->logger->error('Token exchange failed with status @status: @body', [
+        $this->logger->error('Token exchange failed with status @status: @reason', [
           '@status' => $response->getStatusCode(),
-          '@body' => substr((string) $response->getBody(), 0, 500),
+          '@reason' => $response->getReasonPhrase(),
         ]);
         return NULL;
       }
@@ -273,7 +277,8 @@ class AuthService {
       $data = json_decode($response->getBody()->getContents(), TRUE);
       return isset($data['access_token']) ? $data : NULL;
 
-    } catch (\Exception $e) {
+    }
+    catch (\Exception $e) {
       $this->logger->error('Failed to exchange OAuth code: @message', [
         '@message' => $e->getMessage(),
       ]);
@@ -389,9 +394,9 @@ class AuthService {
       ]);
 
       if ($response->getStatusCode() !== 200) {
-        $this->logger->error('Refresh failed with status @status: @body', [
+        $this->logger->error('Refresh failed with status @status: @reason', [
           '@status' => $response->getStatusCode(),
-          '@body' => substr((string) $response->getBody(), 0, 500),
+          '@reason' => $response->getReasonPhrase(),
         ]);
         return NULL;
       }
@@ -399,7 +404,8 @@ class AuthService {
       $data = json_decode($response->getBody()->getContents(), TRUE);
       return isset($data['access_token']) ? $data : NULL;
 
-    } catch (\Exception $e) {
+    }
+    catch (\Exception $e) {
       $this->logger->error('Failed to refresh token: @message', [
         '@message' => $e->getMessage(),
       ]);
@@ -486,13 +492,12 @@ class AuthService {
   public function getTokenGenerationUrl(): string {
     $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
     $platform = $config->get('platform') ?: 'quantcdn';
-    
+
     $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-    
+
     // Assume there's a tokens or API settings page
-    // Adjust this path based on your actual dashboard structure
+    // Adjust this path based on your actual dashboard structure.
     return $dashboard_url . '/account/api-tokens';
   }
 
 }
-

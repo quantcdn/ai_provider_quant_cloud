@@ -44,7 +44,7 @@ class OAuthController extends ControllerBase {
    */
   public function __construct(
     AuthService $auth_service,
-    KeyRepositoryInterface $key_repository
+    KeyRepositoryInterface $key_repository,
   ) {
     $this->authService = $auth_service;
     $this->keyRepository = $key_repository;
@@ -149,4 +149,3 @@ class OAuthController extends ControllerBase {
   }
 
 }
-

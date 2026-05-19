@@ -38,16 +38,19 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
    *   The iterator instance.
    */
   public static function create(StreamInterface $stream, LoggerInterface $logger): static {
-    // Create wrapper that implements IteratorAggregate
+    // Create wrapper that implements IteratorAggregate.
     $wrapper = new class($stream, $logger) implements \IteratorAggregate {
       private StreamInterface $stream;
       private LoggerInterface $logger;
-      
+
       public function __construct(StreamInterface $stream, LoggerInterface $logger) {
         $this->stream = $stream;
         $this->logger = $logger;
       }
-      
+
+      /**
+       *
+       */
       public function getIterator(): \Generator {
         while (!$this->stream->eof()) {
           $line = $this->readLine();
@@ -69,7 +72,7 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
               ];
             }
 
-            // Handle tool use events - yield tool data for the iterator consumer
+            // Handle tool use events - yield tool data for the iterator consumer.
             if (isset($json_data['toolUse'])) {
               yield [
                 'delta' => '',
@@ -81,7 +84,7 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
               ];
             }
 
-            // Also handle tool_request events from done event
+            // Also handle tool_request events from done event.
             if (isset($json_data['response']['toolUse'])) {
               yield [
                 'delta' => '',
@@ -99,18 +102,24 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
           }
         }
       }
-      
+
+      /**
+       *
+       */
       private function readLine(): string {
         $line = '';
         while (!$this->stream->eof()) {
           $char = $this->stream->read(1);
-          if ($char === "\n") break;
+          if ($char === "\n") {
+            break;
+          }
           $line .= $char;
         }
         return trim($line);
       }
+
     };
-    
+
     $instance = new static($wrapper);
     $instance->stream = $stream;
     $instance->logger = $logger;
@@ -131,4 +140,3 @@ class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
   }
 
 }
-

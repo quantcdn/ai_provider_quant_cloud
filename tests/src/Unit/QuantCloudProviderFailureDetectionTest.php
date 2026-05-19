@@ -22,7 +22,6 @@ class QuantCloudProviderFailureDetectionTest extends UnitTestCase {
    *   Response content.
    * @param bool $expected
    *   Expected result.
-   *
    */
   #[DataProvider('emptyContentProvider')]
   public function testIsEmptyResponseContent(
@@ -67,7 +66,6 @@ class QuantCloudProviderFailureDetectionTest extends UnitTestCase {
    *   Configured token limit.
    * @param bool $expected
    *   Expected result.
-   *
    */
   #[DataProvider('tokenLimitProvider')]
   public function testIsLikelyTokenLimited(
@@ -136,7 +134,6 @@ class QuantCloudProviderFailureDetectionTest extends UnitTestCase {
    *   Response data.
    * @param int $expected
    *   Expected token count.
-   *
    */
   #[DataProvider('outputTokenProvider')]
   public function testGetOutputTokenCount(
@@ -191,7 +188,6 @@ class QuantCloudProviderFailureDetectionTest extends UnitTestCase {
    *   Response data.
    * @param string|null $expected
    *   Expected stop reason.
-   *
    */
   #[DataProvider('stopReasonProvider')]
   public function testGetStopReason(
