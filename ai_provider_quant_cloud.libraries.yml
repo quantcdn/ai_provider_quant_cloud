@@ -1,0 +1,4 @@
+admin:
+  css:
+    component:
+      css/ai-provider-quant-cloud.admin.css: {}

@@ -1,0 +1,108 @@
+/**
+ * @file
+ * Admin styles for the Quant Cloud AI Provider settings form.
+ */
+
+.ai-provider-quant-cloud-oauth-connect {
+  background: var(--color-gray-050, #f3f4f9);
+  border: 2px solid var(--color-absolutezero, #003cc5);
+  border-radius: 8px;
+  margin: 15px 0;
+  padding: 20px;
+}
+
+.ai-provider-quant-cloud-oauth-connect__title {
+  margin-top: 0;
+}
+
+.ai-provider-quant-cloud-oauth-connect__button {
+  background: var(--color-absolutezero, #003cc5);
+  border-radius: 6px;
+  color: #fff;
+  display: inline-block;
+  font-size: 16px;
+  padding: 12px 24px;
+  text-decoration: none;
+}
+
+.ai-provider-quant-cloud-oauth-connect__button:focus-visible {
+  outline: 3px solid var(--color-gray-800, #232429);
+  outline-offset: 2px;
+}
+
+.ai-provider-quant-cloud-oauth-connect__note {
+  color: var(--color-gray-800, #232429);
+  font-size: 0.9em;
+}
+
+details.ai-provider-quant-cloud-manual-token-help {
+  background-color: #0f3447;
+  border-color: #2b7dbd;
+  color: #b3dff7;
+}
+
+details.ai-provider-quant-cloud-manual-token-help > summary,
+details.ai-provider-quant-cloud-manual-token-help > summary:hover,
+details.ai-provider-quant-cloud-manual-token-help > summary:focus,
+details.ai-provider-quant-cloud-manual-token-help > summary:active,
+details.ai-provider-quant-cloud-manual-token-help[open] > summary,
+details.ai-provider-quant-cloud-manual-token-help[open] > summary:active,
+details.ai-provider-quant-cloud-manual-token-help[open] > summary:focus {
+  /* !important needed to override admin theme styles that set explicit colors on summary elements. */
+  color: #b3dff7 !important;
+}
+
+details.ai-provider-quant-cloud-manual-token-help a {
+  color: #b3dff7;
+}
+
+/* Native browser disclosure triangle (used by Gin and other themes). */
+details.ai-provider-quant-cloud-manual-token-help > summary::marker {
+  color: #b3dff7;
+}
+
+/* Some themes render the disclosure caret as a summary::before background-image; no effect in others. */
+details.ai-provider-quant-cloud-manual-token-help > summary::before {
+  filter: brightness(0) invert(82%) sepia(30%) saturate(500%) hue-rotate(180deg);
+}
+
+.ai-provider-quant-cloud-manual-token-help__content {
+  color: #b3dff7;
+}
+
+@media (forced-colors: active) {
+  .ai-provider-quant-cloud-oauth-connect,
+  details.ai-provider-quant-cloud-manual-token-help {
+    background-color: Canvas;
+    border-color: CanvasText;
+    color: CanvasText;
+  }
+
+  .ai-provider-quant-cloud-oauth-connect__button {
+    background-color: ButtonFace;
+    color: ButtonText;
+  }
+
+  details.ai-provider-quant-cloud-manual-token-help > summary,
+  details.ai-provider-quant-cloud-manual-token-help > summary:hover,
+  details.ai-provider-quant-cloud-manual-token-help > summary:focus,
+  details.ai-provider-quant-cloud-manual-token-help > summary:active,
+  details.ai-provider-quant-cloud-manual-token-help[open] > summary,
+  details.ai-provider-quant-cloud-manual-token-help[open] > summary:active,
+  details.ai-provider-quant-cloud-manual-token-help[open] > summary:focus,
+  .ai-provider-quant-cloud-manual-token-help__content {
+    color: CanvasText !important;
+  }
+
+  details.ai-provider-quant-cloud-manual-token-help > summary::before {
+    filter: none;
+  }
+
+  details.ai-provider-quant-cloud-manual-token-help > summary::marker {
+    color: CanvasText;
+  }
+
+  details.ai-provider-quant-cloud-manual-token-help a {
+    color: LinkText;
+  }
+}
