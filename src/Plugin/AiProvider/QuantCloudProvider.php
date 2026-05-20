@@ -410,8 +410,13 @@ class QuantCloudProvider extends AiProviderClientBase implements
     $text = $message->getText();
     $images = $message->getImages();
 
-    // Tool *result* — the user side of a tool round-trip. The dashboard
-    // expects role=user with the result content keyed by toolUseId.
+    // Tool *result* — the user side of a tool round-trip. Bedrock Converse
+    // expects role=user with the result wrapped in a `toolResult` content
+    // block (NOT a flat sibling `toolUseId`). Sending the wrong shape causes
+    // the upstream loop to lose the tool-result association, so the model
+    // thinks its tool call never completed and retries — surfacing as a
+    // "saved twice" / "duplicate response" loop in the agent UI.
+    //
     // Tool-result messages intentionally drop image attachments. Vision
     // content + tool results in the same message isn't a shape the
     // dashboard accepts today; revisit if Drupal AI Agents starts emitting
@@ -419,27 +424,36 @@ class QuantCloudProvider extends AiProviderClientBase implements
     if ($message->getToolsId()) {
       return [
         'role' => 'user',
-        'content' => $text,
-        'toolUseId' => $message->getToolsId(),
+        'content' => [
+          [
+            'toolResult' => [
+              'toolUseId' => $message->getToolsId(),
+              'content' => [['text' => $text]],
+            ],
+          ],
+        ],
       ];
     }
 
-    // Assistant message that previously emitted tool calls. Echo the calls
-    // back as a sibling `toolUse` array so the upstream Bedrock loop can
-    // resume them on the next turn.
+    // Assistant message that previously emitted tool calls. Bedrock Converse
+    // expects each tool call inline within the `content` array as a
+    // `toolUse` content block, alongside any text block. Sending tool calls
+    // as a top-level sibling array (legacy shape) is NOT the format Bedrock
+    // round-trips reliably — the upstream loop loses the assistant->tool
+    // pairing and the model thinks its previous tool call never happened.
     if ($message->getTools()) {
-      $tool_uses = [];
+      $blocks = [];
+      if ($text !== '') {
+        $blocks[] = ['text' => $text];
+      }
       foreach ($message->getTools() as $tool) {
-        $tool_uses[] = $this->renderToolUseFromOutput($tool);
+        $tool_use = $this->renderToolUseFromOutput($tool);
+        $blocks[] = ['toolUse' => $tool_use];
       }
-      $payload = [
+      return [
         'role' => $role ?: 'assistant',
-        'content' => $text,
+        'content' => $blocks,
       ];
-      if (!empty($tool_uses)) {
-        $payload['toolUse'] = $tool_uses;
-      }
-      return $payload;
     }
 
     // Plain text-only message.
