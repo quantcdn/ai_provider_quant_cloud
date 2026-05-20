@@ -232,17 +232,20 @@ class QuantCloudClient {
     catch (GuzzleException $e) {
       $status = NULL;
       $reason = NULL;
+      $body = '';
       if ($e instanceof RequestException && $e->getResponse()) {
         $status = $e->getResponse()->getStatusCode();
         $reason = $e->getResponse()->getReasonPhrase();
+        $body = (string) $e->getResponse()->getBody();
       }
       $this->logger->error(
-        'Quant Dashboard AI request failed for @path after @timeout seconds (status: @status @reason)',
+        'Quant Dashboard AI request failed for @path after @timeout seconds (status: @status @reason). Response: @body',
         [
           '@path' => $path,
           '@timeout' => $timeout,
           '@status' => $status ?? 'n/a',
           '@reason' => $reason ?? 'transport error',
+          '@body' => mb_substr($body, 0, 2000),
         ]
       );
       throw new \RuntimeException('AI API request failed (status: ' . ($status ?? 'n/a') . ')', 0, $e);
@@ -411,13 +414,16 @@ class QuantCloudClient {
     catch (GuzzleException $e) {
       $status = NULL;
       $reason = NULL;
+      $body = '';
       if ($e instanceof RequestException && $e->getResponse()) {
         $status = $e->getResponse()->getStatusCode();
         $reason = $e->getResponse()->getReasonPhrase();
+        $body = (string) $e->getResponse()->getBody();
       }
-      $this->logger->error('Quant Dashboard AI request failed (status: @status @reason)', [
+      $this->logger->error('Quant Dashboard AI request failed (status: @status @reason). Response: @body', [
         '@status' => $status ?? 'n/a',
         '@reason' => $reason ?? 'transport error',
+        '@body' => mb_substr($body, 0, 2000),
       ]);
       throw new \RuntimeException('AI API request failed (status: ' . ($status ?? 'n/a') . ')', 0, $e);
     }

@@ -82,8 +82,13 @@ class QuantCloudStreamingClient extends QuantCloudClient {
 
     }
     catch (\Exception $e) {
-      $this->logger->error('Streaming request failed: @message', [
+      $body = '';
+      if ($e instanceof \GuzzleHttp\Exception\RequestException && $e->getResponse()) {
+        $body = (string) $e->getResponse()->getBody();
+      }
+      $this->logger->error('Streaming request failed: @message body=@body', [
         '@message' => $e->getMessage(),
+        '@body' => mb_substr($body, 0, 2000),
       ]);
       throw new \RuntimeException('Streaming failed: ' . $e->getMessage(), 0, $e);
     }
@@ -201,8 +206,13 @@ class QuantCloudStreamingClient extends QuantCloudClient {
 
     }
     catch (\Exception $e) {
-      $this->logger->error('Streaming request failed: @message', [
+      $body = '';
+      if ($e instanceof \GuzzleHttp\Exception\RequestException && $e->getResponse()) {
+        $body = (string) $e->getResponse()->getBody();
+      }
+      $this->logger->error('Streaming request failed: @message body=@body', [
         '@message' => $e->getMessage(),
+        '@body' => mb_substr($body, 0, 2000),
       ]);
       throw new \RuntimeException('Streaming failed: ' . $e->getMessage(), 0, $e);
     }
