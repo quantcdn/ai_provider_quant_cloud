@@ -446,7 +446,16 @@ class QuantCloudVdbProvider extends AiVdbProviderClientBase {
 
       // Store ID mapping in state for later retrieval.
       $document_ids = $response['uploadedDocuments'][0]['documentIds'] ?? [];
-      if (!empty($document_ids) && !empty($data['drupal_long_id'])) {
+      if (empty($document_ids)) {
+        // Upload returned 2xx but no document IDs — treat as a partial
+        // failure so the operator can investigate rather than silently
+        // continuing with a missing id-mapping entry.
+        $this->getLogger('ai_provider_quant_cloud')->warning(
+          'Document upload to collection @collection returned no document IDs. Response shape may have changed; mapping not stored.',
+          ['@collection' => $collection_name],
+        );
+      }
+      elseif (!empty($data['drupal_long_id'])) {
         $state_key = "ai_provider_quant_cloud.vdb_mapping.{$collection_name}";
         $mapping = \Drupal::state()->get($state_key, []);
         $mapping[$data['drupal_long_id']] = $document_ids[0];

@@ -23,6 +23,7 @@ use Drupal\ai\OperationType\ImageToImage\ImageToImageOutput;
 use Drupal\ai\OperationType\GenericType\ImageFile;
 use Drupal\ai\Traits\OperationType\ChatTrait;
 use Drupal\ai_provider_quant_cloud\Client\QuantCloudClient;
+use Drupal\ai_provider_quant_cloud\Client\QuantCloudStreamingClient;
 use Drupal\ai_provider_quant_cloud\QuantCloudChatMessageIterator;
 use Drupal\Core\Config\ImmutableConfig;
 use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
