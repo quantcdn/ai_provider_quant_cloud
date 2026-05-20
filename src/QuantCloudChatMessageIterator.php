@@ -45,7 +45,10 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
   protected LoggerInterface $logger;
 
   /**
-   * Tool-use IDs already emitted on this stream.
+   * Per-stream state threaded across handleEvent() invocations.
+   *
+   * Holds:
+   *  - emitted_tool_ids: array<string,bool>
    *
    * The dashboard reports the same tool call across several frames (announce,
    * progress, inline-input, and a final summary `response.toolUse[]`). The
@@ -54,9 +57,9 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
    * twice produces duplicate `ToolsFunctionOutput` entries. Tracking emitted
    * IDs here lets us yield each tool call exactly once per stream.
    *
-   * @var array<string,bool>
+   * @var array{emitted_tool_ids?: array<string,bool>}
    */
-  protected array $emittedToolIds = [];
+  protected array $state = [];
 
   /**
    * Create a new iterator from the raw stream.
@@ -153,13 +156,13 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
     // Inline tool input frame (single tool call).
     if (isset($event['toolUseId'], $event['name']) && isset($event['input']) && is_array($event['input'])) {
       $toolUseId = (string) $event['toolUseId'];
-      if (!isset($this->emittedToolIds[$toolUseId])) {
+      if (!$this->hasEmittedToolId($toolUseId)) {
         $tool = $this->renderToolCall(
           $toolUseId,
           (string) $event['name'],
           $event['input'],
         );
-        $this->emittedToolIds[$toolUseId] = TRUE;
+        $this->markToolIdEmitted($toolUseId);
         $message = $this->createStreamedChatMessage(
           'assistant',
           '',
@@ -176,11 +179,11 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
     if (isset($event['toolUse']) && is_array($event['toolUse'])) {
       foreach ($this->collectToolUses($event['toolUse']) as $tool) {
         $toolUseId = (string) ($tool->toArray()['id'] ?? '');
-        if ($toolUseId !== '' && isset($this->emittedToolIds[$toolUseId])) {
+        if ($toolUseId !== '' && $this->hasEmittedToolId($toolUseId)) {
           continue;
         }
         if ($toolUseId !== '') {
-          $this->emittedToolIds[$toolUseId] = TRUE;
+          $this->markToolIdEmitted($toolUseId);
         }
         $message = $this->createStreamedChatMessage(
           'assistant',
@@ -205,11 +208,11 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
       if (isset($response['toolUse']) && is_array($response['toolUse'])) {
         foreach ($this->collectToolUses($response['toolUse']) as $tool) {
           $toolUseId = (string) ($tool->toArray()['id'] ?? '');
-          if ($toolUseId !== '' && isset($this->emittedToolIds[$toolUseId])) {
+          if ($toolUseId !== '' && $this->hasEmittedToolId($toolUseId)) {
             continue;
           }
           if ($toolUseId !== '') {
-            $this->emittedToolIds[$toolUseId] = TRUE;
+            $this->markToolIdEmitted($toolUseId);
           }
           $message = $this->createStreamedChatMessage(
             'assistant',
@@ -253,6 +256,20 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
       $rendered[] = $this->renderToolCall($id, $name, $input);
     }
     return $rendered;
+  }
+
+  /**
+   * Check whether a tool-use id has already been yielded on this stream.
+   */
+  protected function hasEmittedToolId(string $toolUseId): bool {
+    return isset($this->state['emitted_tool_ids'][$toolUseId]);
+  }
+
+  /**
+   * Record that a tool-use id has been yielded.
+   */
+  protected function markToolIdEmitted(string $toolUseId): void {
+    $this->state['emitted_tool_ids'][$toolUseId] = TRUE;
   }
 
   /**
