@@ -155,11 +155,11 @@ class QuantCloudProvider extends AiProviderClientBase implements
    * {@inheritdoc}
    */
   public function getSupportedCapabilities(): array {
-    // We expose StreamChatOutput so callers can opt into SSE chat. We do not
-    // advertise ChatFiberSupport because the upstream wire format isn't
-    // OpenAI-shape — our Fiber-aware path still works (it lives in chat()
-    // directly), but we don't want the framework to treat us as a generic
-    // OpenAI Fiber provider.
+    // Adding ChatFiberSupport would tell the base class to drive the SSE
+    // iterator through its native Fiber pump, which assumes an OpenAI-shape
+    // wire format. Our dashboard ships Bedrock-flavoured frames, so we
+    // drive the iterator ourselves (see QuantCloudChatMessageIterator) and
+    // only advertise StreamChatOutput so callers can still opt into SSE.
     return [AiProviderCapability::StreamChatOutput];
   }
 
@@ -412,6 +412,10 @@ class QuantCloudProvider extends AiProviderClientBase implements
 
     // Tool *result* — the user side of a tool round-trip. The dashboard
     // expects role=user with the result content keyed by toolUseId.
+    // Tool-result messages intentionally drop image attachments. Vision
+    // content + tool results in the same message isn't a shape the
+    // dashboard accepts today; revisit if Drupal AI Agents starts emitting
+    // these together.
     if ($message->getToolsId()) {
       return [
         'role' => 'user',

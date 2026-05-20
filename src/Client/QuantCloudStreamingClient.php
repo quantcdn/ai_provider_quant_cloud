@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Drupal\ai_provider_quant_cloud\Client;
 
 use Psr\Http\Message\StreamInterface;
@@ -14,7 +16,7 @@ class QuantCloudStreamingClient extends QuantCloudClient {
   /**
    * Maximum malformed SSE frames to log per streaming request.
    */
-  protected const MAX_SSE_DECODE_WARNINGS = 3;
+  public const MAX_SSE_DECODE_WARNINGS = 3;
 
   /**
    * Chat with streaming response (SSE) - returns raw stream.

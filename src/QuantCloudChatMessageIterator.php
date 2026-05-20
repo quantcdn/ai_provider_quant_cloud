@@ -6,6 +6,7 @@ namespace Drupal\ai_provider_quant_cloud;
 
 use Drupal\Component\Serialization\Json;
 use Drupal\ai\OperationType\Chat\StreamedChatMessageIterator;
+use Drupal\ai_provider_quant_cloud\Client\QuantCloudStreamingClient;
 use Drupal\ai_provider_quant_cloud\StreamedToolCall;
 use Psr\Http\Message\StreamInterface;
 use Psr\Log\LoggerInterface;
@@ -68,7 +69,7 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
    */
   public function doIterate(): \Generator {
     $decodeWarnings = 0;
-    $maxWarnings = 3;
+    $maxWarnings = QuantCloudStreamingClient::MAX_SSE_DECODE_WARNINGS;
 
     while (!$this->stream->eof()) {
       $line = $this->readLine();
@@ -244,6 +245,13 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
    * `totalTokens` on the summary frame; the base class consumes these per
    * chunk to populate the final TokenUsageDto.
    *
+   * Note: the StreamedChatMessage setters
+   * (setInputTokenUsage/setOutputTokenUsage/setTotalTokenUsage) perform
+   * straight assignment rather than accumulation (see
+   * \Drupal\ai\OperationType\Chat\StreamedChatMessage lines 158-174), so
+   * calling this more than once per logical message is safe — it just
+   * overwrites with the latest counts from the most recent frame.
+   *
    * @param \Drupal\ai\OperationType\Chat\StreamedChatMessageInterface $message
    *   The chunk to annotate.
    * @param array<string,mixed> $usage
@@ -264,6 +272,10 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
   /**
    * Read one newline-terminated line from the upstream stream.
    *
+   * The SSE specification allows lines to be terminated by LF (\n), CR (\r),
+   * or CRLF (\r\n). We break on either standalone byte and then strip any
+   * trailing \r that may have been buffered alongside the \n.
+   *
    * @return string
    *   The line without its trailing newline / carriage return.
    */
@@ -271,7 +283,7 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
     $line = '';
     while (!$this->stream->eof()) {
       $char = $this->stream->read(1);
-      if ($char === '' || $char === "\n") {
+      if ($char === '' || $char === "\n" || $char === "\r") {
         break;
       }
       $line .= $char;

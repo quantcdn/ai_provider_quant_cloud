@@ -206,6 +206,10 @@ class ModelsService {
    *
    * This is a minimal emergency fallback only.
    *
+   * @todo Update when new Bedrock models are onboarded. Long term, fetch
+   *   from a dashboard endpoint that exposes per-model caps so this
+   *   hardcoded fallback isn't needed.
+   *
    * @param string|null $feature
    *   Optional feature filter.
    *
