@@ -178,6 +178,51 @@ class QuantCloudChatMessageIteratorTest extends UnitTestCase {
   }
 
   /**
+   * The same toolUseId arriving twice (inline + summary) emits only once.
+   *
+   * The dashboard ships each tool call across multiple frames: an inline
+   * `{toolUseId, name, input}` frame and a summary `response.toolUse[]` entry
+   * with the identical id. The base assembler treats every non-empty `id` as
+   * the start of a new tool call, so without dedup we'd produce two
+   * `ToolsFunctionOutput` rows for one logical call — the agent then sees
+   * the duplicate in its history and self-corrects in a loop.
+   */
+  public function testDoIterateDeduplicatesToolCallsAcrossInlineAndSummaryFrames(): void {
+    $input = ['nid' => 42];
+    $inline = [
+      'toolUseId' => 'tu-shared',
+      'name' => 'lookup_node',
+      'input' => $input,
+    ];
+    $summary = [
+      'stopReason' => 'tool_use',
+      'response' => [
+        'toolUse' => [
+          ['toolUseId' => 'tu-shared', 'name' => 'lookup_node', 'input' => $input],
+        ],
+      ],
+    ];
+    $sse = 'data: ' . json_encode($inline) . "\n"
+      . 'data: ' . json_encode($summary) . "\n";
+
+    $messages = $this->drain($this->makeIterator($sse));
+
+    $seenIds = [];
+    foreach ($messages as $message) {
+      foreach ($message->getTools() ?? [] as $tool) {
+        $this->assertInstanceOf(StreamedToolCall::class, $tool);
+        $seenIds[] = $tool->toArray()['id'];
+      }
+    }
+
+    $this->assertSame(
+      ['tu-shared'],
+      $seenIds,
+      'A toolUseId that appears in both inline and summary frames must be emitted exactly once.',
+    );
+  }
+
+  /**
    * response.content on the summary frame must NOT be re-emitted as a delta.
    *
    * The dashboard ships the accumulated assistant text on the summary frame

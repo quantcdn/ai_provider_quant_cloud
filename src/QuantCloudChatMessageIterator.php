@@ -45,6 +45,20 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
   protected LoggerInterface $logger;
 
   /**
+   * Tool-use IDs already emitted on this stream.
+   *
+   * The dashboard reports the same tool call across several frames (announce,
+   * progress, inline-input, and a final summary `response.toolUse[]`). The
+   * base `assembleToolCalls()` treats every chunk that carries a non-empty
+   * `id` as the start of a new tool call, so emitting the same `toolUseId`
+   * twice produces duplicate `ToolsFunctionOutput` entries. Tracking emitted
+   * IDs here lets us yield each tool call exactly once per stream.
+   *
+   * @var array<string,bool>
+   */
+  protected array $emittedToolIds = [];
+
+  /**
    * Create a new iterator from the raw stream.
    *
    * @param \Psr\Http\Message\StreamInterface $stream
@@ -138,25 +152,36 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
 
     // Inline tool input frame (single tool call).
     if (isset($event['toolUseId'], $event['name']) && isset($event['input']) && is_array($event['input'])) {
-      $tool = $this->renderToolCall(
-        (string) $event['toolUseId'],
-        (string) $event['name'],
-        $event['input'],
-      );
-      $message = $this->createStreamedChatMessage(
-        'assistant',
-        '',
-        $usage,
-        [$tool],
-        $event,
-      );
-      $this->applyUsage($message, $usage);
-      yield $message;
+      $toolUseId = (string) $event['toolUseId'];
+      if (!isset($this->emittedToolIds[$toolUseId])) {
+        $tool = $this->renderToolCall(
+          $toolUseId,
+          (string) $event['name'],
+          $event['input'],
+        );
+        $this->emittedToolIds[$toolUseId] = TRUE;
+        $message = $this->createStreamedChatMessage(
+          'assistant',
+          '',
+          $usage,
+          [$tool],
+          $event,
+        );
+        $this->applyUsage($message, $usage);
+        yield $message;
+      }
     }
 
     // Top-level `toolUse` array frame (sibling of `content`).
     if (isset($event['toolUse']) && is_array($event['toolUse'])) {
       foreach ($this->collectToolUses($event['toolUse']) as $tool) {
+        $toolUseId = (string) ($tool->toArray()['id'] ?? '');
+        if ($toolUseId !== '' && isset($this->emittedToolIds[$toolUseId])) {
+          continue;
+        }
+        if ($toolUseId !== '') {
+          $this->emittedToolIds[$toolUseId] = TRUE;
+        }
         $message = $this->createStreamedChatMessage(
           'assistant',
           '',
@@ -179,6 +204,13 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
 
       if (isset($response['toolUse']) && is_array($response['toolUse'])) {
         foreach ($this->collectToolUses($response['toolUse']) as $tool) {
+          $toolUseId = (string) ($tool->toArray()['id'] ?? '');
+          if ($toolUseId !== '' && isset($this->emittedToolIds[$toolUseId])) {
+            continue;
+          }
+          if ($toolUseId !== '') {
+            $this->emittedToolIds[$toolUseId] = TRUE;
+          }
           $message = $this->createStreamedChatMessage(
             'assistant',
             '',
