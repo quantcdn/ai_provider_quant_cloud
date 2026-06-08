@@ -333,7 +333,12 @@ class QuantCloudProvider extends AiProviderClientBase implements
 
       $structured = $input->getChatStructuredJsonSchema();
       if (!empty($structured)) {
-        $options['response_format'] = $structured;
+        $options['response_format'] = [
+          'type' => 'json_schema',
+          'schema' => $structured['schema'],
+          'name' => $structured['name'] ?? 'json_schema',
+          'strict' => $structured['strict'] ?? FALSE,
+        ];
       }
     }
     elseif (is_array($input)) {
