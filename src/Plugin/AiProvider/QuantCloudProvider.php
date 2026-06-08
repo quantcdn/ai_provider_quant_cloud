@@ -532,15 +532,23 @@ class QuantCloudProvider extends AiProviderClientBase implements
    *   The possibly-clamped options.
    */
   protected function applyMaxTokensClamp(array $options, string $model_id): array {
-    if (!isset($options['maxTokens']) || !is_numeric($options['maxTokens'])) {
+    $config = $this->getConfig();
+    $requested = $options['maxTokens']
+      ?? $config->get('model.max_tokens')
+      ?? QuantCloudClient::DEFAULT_MAX_TOKENS;
+
+    if (!is_numeric($requested)) {
       return $options;
     }
+    $requested = (int) $requested;
+
     $cap = $this->modelsService->getMaxOutputTokens($model_id);
     if ($cap === NULL) {
+      $options['maxTokens'] = $requested;
       return $options;
     }
-    $requested = (int) $options['maxTokens'];
     if ($requested <= $cap) {
+      $options['maxTokens'] = $requested;
       return $options;
     }
     $this->logger->warning(
