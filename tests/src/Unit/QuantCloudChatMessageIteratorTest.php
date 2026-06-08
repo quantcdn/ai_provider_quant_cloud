@@ -247,4 +247,42 @@ class QuantCloudChatMessageIteratorTest extends UnitTestCase {
     )));
   }
 
+  /**
+   * Summary-only usage frames are preserved for output reconstruction.
+   *
+   * The dashboard sends token usage on the final summary frame. Text-only
+   * responses often have no `response.toolUse`, so the iterator must still
+   * yield an empty usage-bearing chunk or reconstruction loses token counts.
+   */
+  public function testSummaryUsageWithoutToolUseIsPreserved(): void {
+    $summary = [
+      'stopReason' => 'end_turn',
+      'usage' => [
+        'inputTokens' => 12,
+        'outputTokens' => 5,
+        'totalTokens' => 17,
+      ],
+      'response' => [
+        'content' => 'Hello, world!',
+      ],
+    ];
+    $sse = 'data: {"delta":"Hello, world!"}' . "\n"
+      . 'data: ' . json_encode($summary) . "\n";
+
+    $iterator = $this->makeIterator($sse);
+    $messages = $this->drain($iterator);
+
+    $this->assertCount(2, $messages);
+    $this->assertSame('', $messages[1]->getText());
+    $this->assertSame(12, $messages[1]->getInputTokenUsage());
+    $this->assertSame(5, $messages[1]->getOutputTokenUsage());
+    $this->assertSame(17, $messages[1]->getTotalTokenUsage());
+
+    $output = $iterator->reconstructChatOutput();
+    $this->assertSame('Hello, world!', $output->getNormalized()->getText());
+    $this->assertSame(12, $output->getTokenUsage()->input);
+    $this->assertSame(5, $output->getTokenUsage()->output);
+    $this->assertSame(17, $output->getTokenUsage()->total);
+  }
+
 }

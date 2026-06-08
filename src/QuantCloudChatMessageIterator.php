@@ -139,6 +139,7 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
    */
   protected function handleEvent(array $event): \Generator {
     $usage = is_array($event['usage'] ?? NULL) ? $event['usage'] : [];
+    $yielded = FALSE;
 
     // Text delta frame.
     if (isset($event['delta']) && is_string($event['delta'])) {
@@ -150,6 +151,7 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
         $event,
       );
       $this->applyUsage($message, $usage);
+      $yielded = TRUE;
       yield $message;
     }
 
@@ -171,6 +173,7 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
           $event,
         );
         $this->applyUsage($message, $usage);
+        $yielded = TRUE;
         yield $message;
       }
     }
@@ -193,6 +196,7 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
           $event,
         );
         $this->applyUsage($message, $usage);
+        $yielded = TRUE;
         yield $message;
       }
     }
@@ -222,9 +226,26 @@ final class QuantCloudChatMessageIterator extends StreamedChatMessageIterator {
             $event,
           );
           $this->applyUsage($message, $usage);
+          $yielded = TRUE;
           yield $message;
         }
       }
+    }
+
+    // Summary-only frames often carry final token usage without producing a
+    // text or tool chunk. Emit an empty chunk so reconstruction can preserve
+    // usage metadata while still avoiding duplicated response.content text.
+    $is_summary = isset($event['response']) || isset($event['stopReason']);
+    if (!$yielded && $usage !== [] && $is_summary) {
+      $message = $this->createStreamedChatMessage(
+        'assistant',
+        '',
+        $usage,
+        NULL,
+        $event,
+      );
+      $this->applyUsage($message, $usage);
+      yield $message;
     }
 
     if (isset($event['stopReason']) && is_string($event['stopReason'])) {
