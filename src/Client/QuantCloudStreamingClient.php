@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Drupal\ai_provider_quant_cloud\Client;
 
 use Psr\Http\Message\StreamInterface;
@@ -14,7 +16,7 @@ class QuantCloudStreamingClient extends QuantCloudClient {
   /**
    * Maximum malformed SSE frames to log per streaming request.
    */
-  protected const MAX_SSE_DECODE_WARNINGS = 3;
+  public const MAX_SSE_DECODE_WARNINGS = 3;
 
   /**
    * Chat with streaming response (SSE) - returns raw stream.
@@ -82,8 +84,19 @@ class QuantCloudStreamingClient extends QuantCloudClient {
 
     }
     catch (\Exception $e) {
-      $this->logger->error('Streaming request failed: @message', [
+      $body = '';
+      if ($e instanceof \GuzzleHttp\Exception\RequestException && $e->getResponse()) {
+        $body = (string) $e->getResponse()->getBody();
+      }
+      // Government deployments may have PROTECTED data in prompts that flow
+      // back through upstream error bodies; only log the body when the
+      // operator has opted in via advanced.enable_logging.
+      $log_body = $config->get('advanced.enable_logging')
+        ? mb_substr($body, 0, 500)
+        : '<redacted; enable advanced.enable_logging to capture>';
+      $this->logger->error('Streaming request failed: @message body=@body', [
         '@message' => $e->getMessage(),
+        '@body' => $log_body,
       ]);
       throw new \RuntimeException('Streaming failed: ' . $e->getMessage(), 0, $e);
     }
@@ -201,8 +214,19 @@ class QuantCloudStreamingClient extends QuantCloudClient {
 
     }
     catch (\Exception $e) {
-      $this->logger->error('Streaming request failed: @message', [
+      $body = '';
+      if ($e instanceof \GuzzleHttp\Exception\RequestException && $e->getResponse()) {
+        $body = (string) $e->getResponse()->getBody();
+      }
+      // Government deployments may have PROTECTED data in prompts that flow
+      // back through upstream error bodies; only log the body when the
+      // operator has opted in via advanced.enable_logging.
+      $log_body = $config->get('advanced.enable_logging')
+        ? mb_substr($body, 0, 500)
+        : '<redacted; enable advanced.enable_logging to capture>';
+      $this->logger->error('Streaming request failed: @message body=@body', [
         '@message' => $e->getMessage(),
+        '@body' => $log_body,
       ]);
       throw new \RuntimeException('Streaming failed: ' . $e->getMessage(), 0, $e);
     }

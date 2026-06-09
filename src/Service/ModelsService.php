@@ -129,6 +129,45 @@ class ModelsService {
   }
 
   /**
+   * Get the maximum output tokens supported by a given model.
+   *
+   * Used by the HTTP clients to clamp user-configured maxTokens down to the
+   * model's hard cap before sending a request upstream. Returning NULL means
+   * "unknown — do not clamp".
+   *
+   * @param string $model_id
+   *   Model identifier.
+   *
+   * @return int|null
+   *   Positive integer cap, or NULL when unknown.
+   */
+  public function getMaxOutputTokens(string $model_id): ?int {
+    try {
+      $all_models = $this->getModels();
+    }
+    catch (\Exception $e) {
+      // Defensive: getModels() already swallows API errors internally, but if
+      // the client itself is misconfigured (e.g. missing organisation ID at
+      // construct of the cache lookup), don't propagate — callers treat NULL
+      // as "unknown, pass through".
+      $this->logger->warning('Could not resolve max output tokens for @model: @message', [
+        '@model' => $model_id,
+        '@message' => $e->getMessage(),
+      ]);
+      return NULL;
+    }
+
+    foreach ($all_models as $model) {
+      if (($model['id'] ?? NULL) === $model_id) {
+        $cap = (int) ($model['maxOutputTokens'] ?? 0);
+        return $cap > 0 ? $cap : NULL;
+      }
+    }
+
+    return NULL;
+  }
+
+  /**
    * Get models filtered by operation type (for Drupal AI compatibility).
    *
    * @param string $operation_type
@@ -166,6 +205,10 @@ class ModelsService {
    * Get fallback models when API is unavailable.
    *
    * This is a minimal emergency fallback only.
+   *
+   * @todo Update when new Bedrock models are onboarded. Long term, fetch
+   *   from a dashboard endpoint that exposes per-model caps so this
+   *   hardcoded fallback isn't needed.
    *
    * @param string|null $feature
    *   Optional feature filter.

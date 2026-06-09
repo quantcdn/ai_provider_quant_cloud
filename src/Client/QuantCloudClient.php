@@ -232,17 +232,27 @@ class QuantCloudClient {
     catch (GuzzleException $e) {
       $status = NULL;
       $reason = NULL;
+      $body = '';
       if ($e instanceof RequestException && $e->getResponse()) {
         $status = $e->getResponse()->getStatusCode();
         $reason = $e->getResponse()->getReasonPhrase();
+        $body = (string) $e->getResponse()->getBody();
       }
+      // Government deployments may have PROTECTED data in prompts that flow
+      // back through upstream error responses. Only log the body when the
+      // operator has opted in via advanced.enable_logging; otherwise emit a
+      // hint pointing them at the flag.
+      $log_body = $config->get('advanced.enable_logging')
+        ? mb_substr($body, 0, 500)
+        : '<redacted; enable advanced.enable_logging to capture>';
       $this->logger->error(
-        'Quant Dashboard AI request failed for @path after @timeout seconds (status: @status @reason)',
+        'Quant Dashboard AI request failed for @path after @timeout seconds (status: @status @reason). Response: @body',
         [
           '@path' => $path,
           '@timeout' => $timeout,
           '@status' => $status ?? 'n/a',
           '@reason' => $reason ?? 'transport error',
+          '@body' => $log_body,
         ]
       );
       throw new \RuntimeException('AI API request failed (status: ' . ($status ?? 'n/a') . ')', 0, $e);
@@ -411,13 +421,21 @@ class QuantCloudClient {
     catch (GuzzleException $e) {
       $status = NULL;
       $reason = NULL;
+      $body = '';
       if ($e instanceof RequestException && $e->getResponse()) {
         $status = $e->getResponse()->getStatusCode();
         $reason = $e->getResponse()->getReasonPhrase();
+        $body = (string) $e->getResponse()->getBody();
       }
-      $this->logger->error('Quant Dashboard AI request failed (status: @status @reason)', [
+      // Government deployments may have PROTECTED data echoed in upstream
+      // error responses; gate the body behind advanced.enable_logging.
+      $log_body = $config->get('advanced.enable_logging')
+        ? mb_substr($body, 0, 500)
+        : '<redacted; enable advanced.enable_logging to capture>';
+      $this->logger->error('Quant Dashboard AI request failed (status: @status @reason). Response: @body', [
         '@status' => $status ?? 'n/a',
         '@reason' => $reason ?? 'transport error',
+        '@body' => $log_body,
       ]);
       throw new \RuntimeException('AI API request failed (status: ' . ($status ?? 'n/a') . ')', 0, $e);
     }
