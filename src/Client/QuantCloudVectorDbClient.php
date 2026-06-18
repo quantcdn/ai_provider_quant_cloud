@@ -154,7 +154,7 @@ class QuantCloudVectorDbClient {
    * Build full API endpoint URL for VectorDB API.
    *
    * @param string $path
-   *   API path relative to /api/v3/organisations/{orgId}/ai/vector-db/
+   *   API path relative to /api/v3/organisations/{orgId}/ai/vector-db/.
    *
    * @return string
    *   The full API URL.
@@ -173,7 +173,7 @@ class QuantCloudVectorDbClient {
    * Make a POST request to the VectorDB API.
    *
    * @param string $path
-   *   API path relative to /vector-db/
+   *   API path relative to /vector-db/.
    * @param array $data
    *   Request body data.
    * @param array $request_options
@@ -228,7 +228,7 @@ class QuantCloudVectorDbClient {
    * Make a GET request to the VectorDB API.
    *
    * @param string $path
-   *   API path relative to /vector-db/
+   *   API path relative to /vector-db/.
    * @param array $query_params
    *   Query parameters.
    *
@@ -283,7 +283,7 @@ class QuantCloudVectorDbClient {
    * Make a DELETE request to the VectorDB API.
    *
    * @param string $path
-   *   API path relative to /vector-db/
+   *   API path relative to /vector-db/.
    *
    * @return array
    *   Response data.
@@ -474,7 +474,7 @@ class QuantCloudVectorDbClient {
    * Supports three deletion modes:
    * 1. purgeAll - Delete ALL documents in the collection
    * 2. documentIds - Delete specific documents by UUID
-   * 3. metadata - Delete by metadata field match
+   * 3. metadata - Delete by metadata field match.
    *
    * @param string $collection_id
    *   The collection UUID.

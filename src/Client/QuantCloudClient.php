@@ -2,6 +2,7 @@
 
 namespace Drupal\ai_provider_quant_cloud\Client;
 
+use GuzzleHttp\Exception\RequestException;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\ai_provider_quant_cloud\Service\AuthService;
@@ -31,7 +32,7 @@ class QuantCloudClient {
   /**
    * Default maximum response tokens for chat requests.
    */
-  public const DEFAULT_MAX_TOKENS = 16384;
+  public const DEFAULT_MAX_TOKENS = 32768;
 
   /**
    * Default HTTP request timeout, in seconds.
@@ -83,7 +84,7 @@ class QuantCloudClient {
     ClientInterface $http_client,
     ConfigFactoryInterface $config_factory,
     LoggerChannelFactoryInterface $logger_factory,
-    AuthService $auth_service
+    AuthService $auth_service,
   ) {
     $this->httpClient = $http_client;
     $this->configFactory = $config_factory;
@@ -110,17 +111,17 @@ class QuantCloudClient {
    */
   protected function getHeaders(): array {
     $access_token = $this->getAccessToken();
-    
+
     $headers = [
       'Content-Type' => 'application/json',
       'Accept' => 'application/json',
     ];
-    
+
     if ($access_token) {
-      // Dashboard API uses Bearer token authentication
+      // Dashboard API uses Bearer token authentication.
       $headers['Authorization'] = 'Bearer ' . $access_token;
     }
-    
+
     return $headers;
   }
 
@@ -130,48 +131,48 @@ class QuantCloudClient {
   protected function getDashboardUrl(): string {
     $config = $this->getConfig();
     $platform = $config->get('platform') ?: 'quantcdn';
-    
-    // Map platform to dashboard URL
+
+    // Map platform to dashboard URL.
     $urls = [
       'quantcdn' => 'https://dashboard.quantcdn.io',
       'quantgov' => 'https://dash.quantgov.cloud',
       'quantcdn_staging' => 'https://portal.stage.quantcdn.io',
       'quantgov_staging' => 'https://dash.stage.quantgov.cloud',
     ];
-    
+
     $dashboard_url = $urls[$platform] ?? $urls['quantcdn'];
-    
+
     return rtrim($dashboard_url, '/');
   }
-  
+
   /**
    * Get organization ID from config.
    */
   protected function getOrganizationId(): string {
     $config = $this->getConfig();
     $org_id = $config->get('auth.organization_id');
-    
+
     if (!$org_id) {
       throw new \RuntimeException('Organization ID not configured');
     }
-    
+
     return $org_id;
   }
-  
+
   /**
    * Build full API endpoint URL for dashboard API.
-   * 
+   *
    * @param string $path
-   *   API path relative to /api/v3/organisations/{orgId}/ai/
+   *   API path relative to /api/v3/organisations/{orgId}/ai/.
    */
   protected function buildApiUrl(string $path): string {
     $dashboard_url = $this->getDashboardUrl();
     $org_id = $this->getOrganizationId();
-    
-    // Dashboard API pattern: /api/v3/organisations/{orgId}/ai/{endpoint}
+
+    // Dashboard API pattern: /api/v3/organisations/{orgId}/ai/{endpoint}.
     $base_path = "/api/v3/organisations/{$org_id}/ai";
     $full_path = ltrim($path, '/');
-    
+
     return "{$dashboard_url}{$base_path}/{$full_path}";
   }
 
@@ -197,7 +198,7 @@ class QuantCloudClient {
     $timeout = $request_options['timeout']
       ?? $config->get('advanced.timeout')
       ?? self::DEFAULT_TIMEOUT;
-    
+
     $options = [
       'headers' => $this->getHeaders(),
       'json' => $data,
@@ -206,7 +207,7 @@ class QuantCloudClient {
         ?? $config->get('advanced.connect_timeout')
         ?? self::DEFAULT_CONNECT_TIMEOUT,
     ];
-    
+
     try {
       if ($config->get('advanced.enable_logging')) {
         $this->logger->info('Quant Dashboard AI request: @method @url', [
@@ -214,41 +215,58 @@ class QuantCloudClient {
           '@url' => $url,
         ]);
       }
-      
+
       $response = $this->httpClient->post($url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
-      
+
       if ($config->get('advanced.enable_logging')) {
         $this->logger->info('Quant Dashboard AI response: @status', [
           '@status' => $response->getStatusCode(),
         ]);
       }
-      
+
       return $result;
-      
+
     }
     catch (GuzzleException $e) {
+      $status = NULL;
+      $reason = NULL;
+      $body = '';
+      if ($e instanceof RequestException && $e->getResponse()) {
+        $status = $e->getResponse()->getStatusCode();
+        $reason = $e->getResponse()->getReasonPhrase();
+        $body = (string) $e->getResponse()->getBody();
+      }
+      // Government deployments may have PROTECTED data in prompts that flow
+      // back through upstream error responses. Only log the body when the
+      // operator has opted in via advanced.enable_logging; otherwise emit a
+      // hint pointing them at the flag.
+      $log_body = $config->get('advanced.enable_logging')
+        ? mb_substr($body, 0, 500)
+        : '<redacted; enable advanced.enable_logging to capture>';
       $this->logger->error(
-        'Quant Dashboard AI request failed for @path after @timeout seconds: @message',
+        'Quant Dashboard AI request failed for @path after @timeout seconds (status: @status @reason). Response: @body',
         [
           '@path' => $path,
           '@timeout' => $timeout,
-          '@message' => $e->getMessage(),
+          '@status' => $status ?? 'n/a',
+          '@reason' => $reason ?? 'transport error',
+          '@body' => $log_body,
         ]
       );
-      throw new \RuntimeException('AI API request failed: ' . $e->getMessage(), 0, $e);
+      throw new \RuntimeException('AI API request failed (status: ' . ($status ?? 'n/a') . ')', 0, $e);
     }
   }
 
   /**
    * Chat completion request (buffered).
-   * 
-   * Dashboard API route: POST /api/v3/organisations/{orgId}/ai/chat
+   *
+   * Dashboard API route: POST /api/v3/organisations/{orgId}/ai/chat.
    */
   public function chat(array $messages, string $model_id, array $options = []): array {
     $config = $this->getConfig();
-    
+
     $data = [
       'messages' => $messages,
       'modelId' => $model_id,
@@ -259,35 +277,35 @@ class QuantCloudClient {
         ?? $config->get('model.max_tokens')
         ?? self::DEFAULT_MAX_TOKENS,
     ];
-    
-    // Add structured output (JSON Schema) if provided
-    if (isset($options['responseFormat'])) {
-      $data['responseFormat'] = $options['responseFormat'];
+
+    // Add structured output (JSON Schema) if provided.
+    if (isset($options['response_format'])) {
+      $data['response_format'] = $options['response_format'];
     }
-    
-    // Add function calling (tools) if provided
+
+    // Add function calling (tools) if provided.
     if (isset($options['toolConfig'])) {
       $data['toolConfig'] = $options['toolConfig'];
     }
-    
-    // Add system prompt if provided
+
+    // Add system prompt if provided.
     if (isset($options['systemPrompt'])) {
       $data['systemPrompt'] = $options['systemPrompt'];
     }
-    
+
     return $this->post('chat', $data, $this->getRequestOptions($options));
   }
 
   /**
    * Text completion request.
-   * 
+   *
    * Note: This uses chat models for text-to-text operations as that's how
    * the Dashboard API is structured. For Drupal AI compatibility.
    */
   public function complete(string $prompt, string $model_id, array $options = []): array {
     $config = $this->getConfig();
-    
-    // Convert text-to-text to a chat message format
+
+    // Convert text-to-text to a chat message format.
     $data = [
       'messages' => [
         [
@@ -303,7 +321,7 @@ class QuantCloudClient {
         ?? $config->get('model.max_tokens')
         ?? self::DEFAULT_MAX_TOKENS,
     ];
-    
+
     return $this->post('chat', $data, $this->getRequestOptions($options));
   }
 
@@ -329,7 +347,7 @@ class QuantCloudClient {
 
   /**
    * Embeddings request.
-   * 
+   *
    * Note: Embeddings may not be available through the dashboard API yet.
    * This is a placeholder for future implementation.
    */
@@ -338,15 +356,15 @@ class QuantCloudClient {
       'input' => $text,
       'modelId' => $model_id,
     ];
-    
-    // Optional: dimensions and normalize if API supports them
+
+    // Optional: dimensions and normalize if API supports them.
     if (isset($options['dimensions'])) {
       $data['dimensions'] = $options['dimensions'];
     }
     if (isset($options['normalize'])) {
       $data['normalize'] = $options['normalize'];
     }
-    
+
     return $this->post('embeddings', $data);
   }
 
@@ -367,18 +385,18 @@ class QuantCloudClient {
   public function get(string $path, array $query_params = []): array {
     $config = $this->getConfig();
     $url = $this->buildApiUrl($path);
-    
-    // Build URL with query parameters
+
+    // Build URL with query parameters.
     if (!empty($query_params)) {
       $query = http_build_query($query_params);
       $url .= '?' . $query;
     }
-    
+
     $options = [
       'headers' => $this->getHeaders(),
       'timeout' => $config->get('advanced.timeout') ?? self::DEFAULT_TIMEOUT,
     ];
-    
+
     try {
       if ($config->get('advanced.enable_logging')) {
         $this->logger->info('Quant Dashboard AI request: @method @url', [
@@ -386,32 +404,47 @@ class QuantCloudClient {
           '@url' => $url,
         ]);
       }
-      
+
       $response = $this->httpClient->get($url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
-      
+
       if ($config->get('advanced.enable_logging')) {
         $this->logger->info('Quant Dashboard AI response: @status', [
           '@status' => $response->getStatusCode(),
         ]);
       }
-      
+
       return $result;
-      
+
     }
     catch (GuzzleException $e) {
-      $this->logger->error('Quant Dashboard AI request failed: @message', [
-        '@message' => $e->getMessage(),
+      $status = NULL;
+      $reason = NULL;
+      $body = '';
+      if ($e instanceof RequestException && $e->getResponse()) {
+        $status = $e->getResponse()->getStatusCode();
+        $reason = $e->getResponse()->getReasonPhrase();
+        $body = (string) $e->getResponse()->getBody();
+      }
+      // Government deployments may have PROTECTED data echoed in upstream
+      // error responses; gate the body behind advanced.enable_logging.
+      $log_body = $config->get('advanced.enable_logging')
+        ? mb_substr($body, 0, 500)
+        : '<redacted; enable advanced.enable_logging to capture>';
+      $this->logger->error('Quant Dashboard AI request failed (status: @status @reason). Response: @body', [
+        '@status' => $status ?? 'n/a',
+        '@reason' => $reason ?? 'transport error',
+        '@body' => $log_body,
       ]);
-      throw new \RuntimeException('AI API request failed: ' . $e->getMessage(), 0, $e);
+      throw new \RuntimeException('AI API request failed (status: ' . ($status ?? 'n/a') . ')', 0, $e);
     }
   }
 
   /**
    * Get available models.
-   * 
-   * Dashboard API route: GET /api/v3/organisations/{orgId}/ai/models
+   *
+   * Dashboard API route: GET /api/v3/organisations/{orgId}/ai/models.
    */
   public function getModels(array $filters = []): array {
     return $this->get('models', $filters);
@@ -419,7 +452,7 @@ class QuantCloudClient {
 
   /**
    * Get model details.
-   * 
+   *
    * Dashboard API route: GET /api/v3/organisations/{orgId}/ai/models/{modelId}
    */
   public function getModelDetails(string $model_id): array {
@@ -427,4 +460,3 @@ class QuantCloudClient {
   }
 
 }
-
