@@ -9,6 +9,22 @@ declare(strict_types=1);
 
 use Drupal\Core\Hook\Attribute\LegacyRequirementsHook;
 use Drupal\ai_provider_quant_cloud\Hook\RuntimeRequirementsHook;
+use Drupal\ai_provider_quant_cloud\Service\AuthService;
+use Drupal\ai_provider_quant_cloud\Service\OAuthTokenStore;
+
+/**
+ * Implements hook_uninstall().
+ *
+ * Removes the stored OAuth tokens. The module's Keys depend on this module
+ * through their provider, so the config system removes them.
+ */
+function ai_provider_quant_cloud_uninstall() {
+  \Drupal::keyValue(OAuthTokenStore::COLLECTION)->deleteAll();
+  \Drupal::state()->deleteMultiple([
+    AuthService::LEGACY_EXPIRES_AT_STATE,
+    AuthService::LEGACY_FINGERPRINT_STATE,
+  ]);
+}
 
 /**
  * Implements hook_requirements().

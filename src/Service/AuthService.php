@@ -2,7 +2,10 @@
 
 namespace Drupal\ai_provider_quant_cloud\Service;
 
+use Drupal\Component\Utility\Environment;
 use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Config\FileStorageFactory;
+use Drupal\Core\Config\StorageInterface;
 use Drupal\Core\Database\Connection;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Lock\LockBackendInterface;
@@ -88,20 +91,9 @@ class AuthService {
   protected const REFRESH_LOCK_ID = 'ai_provider_quant_cloud.oauth_refresh';
 
   /**
-   * Lock lifetime.
-   *
-   * It must cover a refresh, the recovery pause and one retry (the retry
-   * runs in CLI only): 60 + 15 + 60 = 135 seconds.
+   * Lock lifetime: one refresh request (60 s) plus a margin.
    */
-  protected const REFRESH_LOCK_TIMEOUT = 150;
-
-  /**
-   * Seconds to wait before the one retry after an unknown outcome.
-   *
-   * The portal re-issues a lost rotation once, for the previous refresh
-   * token, within five minutes.
-   */
-  protected const RECOVERY_DELAY = 15;
+  protected const REFRESH_LOCK_TIMEOUT = 90;
 
   /**
    * Seconds in which web requests do not refresh after an unknown outcome.
@@ -119,11 +111,25 @@ class AuthService {
   protected const CRON_BACKOFF = 600;
 
   /**
-   * Seconds in which a pending refresh is retried with the same token.
+   * Age in seconds after which a pending refresh may be retried.
    *
-   * The portal re-issues a lost rotation within five minutes.
+   * For 30 s after a rotation, the portal answers the previous refresh
+   * token with "just rotated". A retry before then would also race the
+   * original request, which can still be waiting on the portal.
+   */
+  protected const PENDING_MIN_AGE = 45;
+
+  /**
+   * Age in seconds up to which a pending refresh may be retried.
+   *
+   * The portal re-issues a lost rotation up to five minutes after it.
    */
   protected const PENDING_WINDOW = 240;
+
+  /**
+   * Retries of the same refresh token per pending marker.
+   */
+  protected const PENDING_MAX_RETRIES = 2;
 
   /**
    * Maximum seconds to wait for a peer that holds the refresh lock.
@@ -641,13 +647,17 @@ class AuthService {
    * export from an earlier release would otherwise put a token value back
    * into active config.
    */
-  public function protectModuleKey(KeyInterface $key): void {
+  public function protectModuleKey(KeyInterface $key, ?KeyInterface $original = NULL): void {
     $token = self::MODULE_KEYS[$key->id()] ?? NULL;
     if ($token === NULL || $this->isPointerKey($key) || !$this->usesModuleTokens()) {
       return;
     }
-    $this->rescueKeyValue($key);
+    // The active Key holds the current token; an imported one can be old.
+    $this->rescueKeyValue($original ?? $key);
     $this->pointKeyAtStore($key, $token);
+    // The entity calculated its dependencies before this hook ran. The
+    // pointer provider belongs to this module, so the Key must depend on it.
+    $key->calculateDependencies();
   }
 
   /**
@@ -668,6 +678,42 @@ class AuthService {
       }
     }
     return $ids;
+  }
+
+  /**
+   * The module Key IDs whose export in the sync directory holds a token.
+   *
+   * An export from an earlier release keeps the old token in the config
+   * sync directory until the site runs "drush cex" again.
+   *
+   * @return string[]
+   *   Key IDs; empty when no sync export holds a token.
+   */
+  public function getSyncKeysWithTokens(): array {
+    $sync = $this->getSyncStorage();
+    if ($sync === NULL) {
+      return [];
+    }
+    $ids = [];
+    foreach (array_keys(self::MODULE_KEYS) as $key_id) {
+      $data = $sync->read('key.key.' . $key_id);
+      if (is_array($data) && ($data['key_provider'] ?? '') !== self::KEY_PROVIDER_ID) {
+        $ids[] = $key_id;
+      }
+    }
+    return $ids;
+  }
+
+  /**
+   * The config sync storage, or NULL when no sync directory is set.
+   */
+  protected function getSyncStorage(): ?StorageInterface {
+    try {
+      return FileStorageFactory::getSync();
+    }
+    catch (\Exception $e) {
+      return NULL;
+    }
   }
 
   /**
@@ -725,7 +771,26 @@ class AuthService {
     if ($has_refresh && $expires_at > 0 && empty($record[OAuthTokenStore::EXPIRES_AT])) {
       $this->tokenStore->set(OAuthTokenStore::EXPIRES_AT, $expires_at);
     }
+    $this->migrateLegacyStateFingerprint($record);
     $this->state->deleteMultiple([self::LEGACY_EXPIRES_AT_STATE, self::LEGACY_FINGERPRINT_STATE]);
+  }
+
+  /**
+   * Keep the verdict of a development-build state fingerprint.
+   *
+   * A value that matches this site's result of the same formula means the
+   * tokens are this site's own; they stay unstamped. Another value means
+   * another site stored them; the record is marked as foreign until an
+   * administrator confirms or reconnects.
+   */
+  protected function migrateLegacyStateFingerprint(array $record): void {
+    $legacy = $this->state->get(self::LEGACY_FINGERPRINT_STATE);
+    if (!is_string($legacy) || $legacy === '' || !empty($record[OAuthTokenStore::FINGERPRINT])) {
+      return;
+    }
+    if (!hash_equals($legacy, $this->siteFingerprint->computeLegacyStateFormat())) {
+      $this->tokenStore->set(OAuthTokenStore::FINGERPRINT, ['legacy' => hash('sha256', $legacy)]);
+    }
   }
 
   /**
@@ -891,9 +956,10 @@ class AuthService {
    *   due but backs off after an unknown outcome.
    */
   protected function getRefreshDecision(array $record, int $margin, bool $cron): string {
-    if ($this->hasRecentPendingRefresh($record)) {
-      // Recover a rotation that may have been lost: retry at once.
-      return 'refresh';
+    $pending = $this->getPendingState($record);
+    if ($pending !== 'none') {
+      // Retry a rotation that may have been lost, or wait for its window.
+      return $pending === 'retry' ? 'refresh' : 'defer';
     }
     if (!$this->isExpiring($record, $margin)) {
       return 'none';
@@ -903,22 +969,35 @@ class AuthService {
   }
 
   /**
-   * Whether one refresh of the stored refresh token has an unknown outcome.
+   * The state of a refresh of the stored refresh token with no answer.
    *
-   * Only a marker younger than PENDING_WINDOW counts; the portal re-issues
-   * a lost rotation within five minutes. The recovery is tried once: after
-   * a second unknown outcome, the backoff applies.
+   * @return string
+   *   'none' when there is no such refresh younger than PENDING_WINDOW;
+   *   'wait' when it is younger than PENDING_MIN_AGE or has used its
+   *   retries; 'retry' when the same token may be sent again now.
    */
-  protected function hasRecentPendingRefresh(array $record): bool {
+  protected function getPendingState(array $record): string {
+    $pending = $this->getCurrentPending($record);
+    if ($pending === NULL) {
+      return 'none';
+    }
+    $age = time() - (int) ($pending['since'] ?? 0);
+    if ($age < self::PENDING_MIN_AGE || (int) ($pending['attempts'] ?? 1) > self::PENDING_MAX_RETRIES) {
+      return 'wait';
+    }
+    return 'retry';
+  }
+
+  /**
+   * The pending marker, if it is for the stored refresh token and recent.
+   */
+  protected function getCurrentPending(array $record): ?array {
     $pending = $record[OAuthTokenStore::PENDING] ?? NULL;
     $refresh = (string) ($record[OAuthTokenStore::REFRESH_TOKEN] ?? '');
-    if (!is_array($pending) || $refresh === '' || (int) ($pending['attempts'] ?? 1) >= 2) {
-      return FALSE;
+    if (!is_array($pending) || $refresh === '' || (int) ($pending['since'] ?? 0) < time() - self::PENDING_WINDOW) {
+      return NULL;
     }
-    if ((int) ($pending['since'] ?? 0) < time() - self::PENDING_WINDOW) {
-      return FALSE;
-    }
-    return hash_equals((string) ($pending['token'] ?? ''), hash('sha256', $refresh));
+    return hash_equals((string) ($pending['token'] ?? ''), hash('sha256', $refresh)) ? $pending : NULL;
   }
 
   /**
@@ -1047,9 +1126,9 @@ class AuthService {
       return $this->getUsableAccessToken($record);
     }
 
-    $result = $this->requestRefreshWithRecovery((string) $record[OAuthTokenStore::REFRESH_TOKEN]);
+    $result = $this->requestRefreshOnce((string) $record[OAuthTokenStore::REFRESH_TOKEN]);
     if ($result['tokens']) {
-      return $this->saveRotatedTokens($result['tokens']);
+      return $this->saveRotatedTokens($result['tokens'], $record);
     }
     if ($result['outcome'] === 'refused') {
       $this->recordRefusal($result['error'], $result['description']);
@@ -1079,26 +1158,28 @@ class AuthService {
     if ($this->getRefreshBlocker($record) !== NULL) {
       return FALSE;
     }
-    return $this->isExpiring($record, $margin) || $this->hasRecentPendingRefresh($record);
+    $pending = $this->getPendingState($record);
+    if ($pending !== 'none') {
+      return $pending === 'retry';
+    }
+    return $this->isExpiring($record, $margin);
   }
 
   /**
-   * Send the refresh grant; in CLI, retry once after an unknown outcome.
+   * Send the refresh grant once, and back off when there is no answer.
    *
-   * The portal can commit a rotation whose answer never arrives. Within
-   * five minutes, it answers the same (previous) refresh token once more
-   * with a new pair. Cron and drush wait 15 s and retry in-process. A web
-   * request does not wait: the pending marker makes the next process (web
-   * or cron) retry at once. The caller holds the lock.
+   * The portal can commit a rotation whose answer never arrives. From 30 s
+   * to five minutes after it, the portal answers the same (previous)
+   * refresh token once more with a new pair, if the new access token is
+   * unused. The pending marker makes a later process (web or cron) send
+   * the same token again 45 s to 4 minutes after the first send. No
+   * process sleeps or retries inside the request. The caller holds the
+   * lock.
    */
-  protected function requestRefreshWithRecovery(string $refresh_token): array {
+  protected function requestRefreshOnce(string $refresh_token): array {
     $this->keepRunning();
     $result = $this->sendRefresh($refresh_token);
-    if ($result['outcome'] === 'unknown' && $this->isCli()) {
-      $this->pause(self::RECOVERY_DELAY);
-      $result = $this->sendRefresh($refresh_token);
-    }
-    if ($result['outcome'] === 'unknown') {
+    if (in_array($result['outcome'], ['unknown', 'rotated'], TRUE)) {
       $this->tokenStore->setMany([
         OAuthTokenStore::RETRY_AFTER => time() + self::REQUEST_BACKOFF,
         OAuthTokenStore::CRON_RETRY_AFTER => time() + self::CRON_BACKOFF,
@@ -1110,20 +1191,24 @@ class AuthService {
   /**
    * Send the refresh grant with a pending marker around it.
    *
-   * The marker stays after an unknown outcome, and after a success until
-   * the new pair is saved. It also stays if the process dies.
+   * The marker keeps the time of the first send of this refresh token, so
+   * the retry window follows the portal's rotation time. It stays after an
+   * unknown or "just rotated" outcome, after a success until the new pair
+   * is saved, and when the process dies. A refusal or another definite
+   * error removes it.
    */
   protected function sendRefresh(string $refresh_token): array {
-    $hash = hash('sha256', $refresh_token);
-    $pending = $this->tokenStore->get(OAuthTokenStore::PENDING);
-    $same_token = is_array($pending) && hash_equals((string) ($pending['token'] ?? ''), $hash);
+    $previous = $this->getCurrentPending([
+      OAuthTokenStore::PENDING => $this->tokenStore->get(OAuthTokenStore::PENDING),
+      OAuthTokenStore::REFRESH_TOKEN => $refresh_token,
+    ]);
     $this->tokenStore->set(OAuthTokenStore::PENDING, [
-      'since' => time(),
-      'token' => $hash,
-      'attempts' => $same_token ? (int) ($pending['attempts'] ?? 1) + 1 : 1,
+      'since' => $previous ? (int) $previous['since'] : time(),
+      'token' => hash('sha256', $refresh_token),
+      'attempts' => $previous ? (int) ($previous['attempts'] ?? 1) + 1 : 1,
     ]);
     $result = $this->requestRefresh($refresh_token);
-    if (in_array($result['outcome'], ['rotated', 'refused', 'failed'], TRUE)) {
+    if (in_array($result['outcome'], ['refused', 'failed'], TRUE)) {
       $this->tokenStore->delete([OAuthTokenStore::PENDING]);
     }
     return $result;
@@ -1134,32 +1219,35 @@ class AuthService {
    *
    * A client disconnect or the execution time limit must not stop the
    * process between the refresh request and the save of the new pair.
+   * Hosts can disable both functions; then this does what it can.
    */
   protected function keepRunning(): void {
-    ignore_user_abort(TRUE);
-    set_time_limit(0);
+    if ($this->canIgnoreUserAbort()) {
+      ignore_user_abort(TRUE);
+    }
+    Environment::setTimeLimit(0);
   }
 
   /**
-   * Whether this process runs from the command line (cron or drush).
+   * Whether ignore_user_abort() is available on this host.
    */
-  protected function isCli(): bool {
-    return PHP_SAPI === 'cli';
-  }
-
-  /**
-   * Wait before the recovery retry.
-   */
-  protected function pause(int $seconds): void {
-    sleep($seconds);
+  protected function canIgnoreUserAbort(): bool {
+    return function_exists('ignore_user_abort');
   }
 
   /**
    * Save a rotated token pair and return the new access token.
    *
-   * Only the token store is written: no config, no Key entity.
+   * Only the token store is written: no config, no Key entity. If the save
+   * fails, the new access token is not used: an unused successor lets the
+   * portal recover the pair when the pending marker is retried.
+   *
+   * @param array $token_data
+   *   The new token response.
+   * @param array $previous
+   *   The stored values before the refresh.
    */
-  protected function saveRotatedTokens(array $token_data): string {
+  protected function saveRotatedTokens(array $token_data, array $previous): ?string {
     try {
       $this->tokenStore->saveTokens($token_data);
       $this->tokenStore->delete([
@@ -1173,11 +1261,10 @@ class AuthService {
       }
     }
     catch (\Throwable $e) {
-      // The portal already rotated the refresh token. The new pair works for
-      // this request, but the next refresh may fail and need a reconnect.
-      $this->logger->critical('Could not save the refreshed OAuth tokens (@class). Reconnect to Quant Cloud if later requests fail.', [
+      $this->logger->critical('Could not save the refreshed OAuth tokens (@class). The pending refresh is retried later; reconnect to Quant Cloud if requests keep failing.', [
         '@class' => get_class($e),
       ]);
+      return $this->getUsableAccessToken($previous);
     }
     return $token_data['access_token'];
   }
@@ -1294,10 +1381,27 @@ class AuthService {
    */
   protected function isRecordFromAnotherSite(array $record): bool {
     $stored = $record[OAuthTokenStore::FINGERPRINT] ?? NULL;
+    if (is_string($stored) && $stored !== '') {
+      return !$this->adoptLegacyFingerprint($stored);
+    }
     if (!is_array($stored) || $stored === []) {
       return FALSE;
     }
     return $this->siteFingerprint->getDifferences($stored) !== [];
+  }
+
+  /**
+   * Restamp a development-build string fingerprint if it is this site's.
+   *
+   * @return bool
+   *   TRUE if the string matches this site's result of the same formula.
+   */
+  protected function adoptLegacyFingerprint(string $stored): bool {
+    if (!hash_equals($stored, $this->siteFingerprint->computeLegacyStoreFormat())) {
+      return FALSE;
+    }
+    $this->tokenStore->set(OAuthTokenStore::FINGERPRINT, $this->getSiteFingerprint());
+    return TRUE;
   }
 
   /**
@@ -1308,6 +1412,9 @@ class AuthService {
    */
   public function getFingerprintDifferences(): array {
     $stored = $this->tokenStore->get(OAuthTokenStore::FINGERPRINT);
+    if (is_string($stored) && $stored !== '') {
+      return $this->adoptLegacyFingerprint($stored) ? [] : ['fingerprint from a development build'];
+    }
     return is_array($stored) ? $this->siteFingerprint->getDifferences($stored) : [];
   }
 

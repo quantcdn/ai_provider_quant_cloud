@@ -115,11 +115,13 @@ Quant Cloud rotates the refresh token every time it is used. **Cron must
 run.** The module refreshes the tokens on cron when fewer than 45 days
 remain, which also keeps the connection from going idle. Without cron, a
 web request refreshes the token in the last minute before it expires; it
-waits up to 60 seconds for Quant Cloud. If no answer arrives, the next
-process retries at once, and other web requests do not try again for 60
-seconds. Cron and drush wait 15 seconds and retry in the same process;
-after a failure, cron backs off for 10 minutes. A refresh never runs
-inside an open database transaction.
+waits up to 60 seconds for Quant Cloud. If no answer arrives, Quant Cloud
+may still have rotated the token. A later web request or cron run then
+sends the same refresh token again, 45 seconds to 4 minutes after the first
+attempt (at most twice), and Quant Cloud re-issues the lost pair. Between
+those attempts, web requests wait 60 seconds and cron waits 10 minutes
+before a new refresh. A refresh never runs inside an open database
+transaction.
 
 A copy of the production database (for example to staging) carries the
 tokens. If two sites share one refresh token, the second refresh can make
@@ -128,7 +130,9 @@ stores a fingerprint of the site with the tokens on connect and on each
 refresh. It covers `$settings['hash_salt']`, the database name, the table
 prefix, the site UUID, and these hosting variables when they are set:
 `PLATFORM_ENVIRONMENT`, `LAGOON_ENVIRONMENT`, `PANTHEON_ENVIRONMENT` and
-`AH_SITE_ENVIRONMENT`. A site whose fingerprint does not match keeps using
+`AH_SITE_ENVIRONMENT` (read from the process environment; a variable
+counts only when both the stored and the current fingerprint have it). A
+site whose fingerprint does not match keeps using
 the access token until it expires, but does not refresh it. The status
 report and the settings form name the component that differs and ask you to
 reconnect that site. A user with the restricted permission "Confirm that

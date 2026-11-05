@@ -45,7 +45,29 @@ class RuntimeRequirementsHook {
    *   The requirements array, empty when no action is needed.
    */
   public static function build(AuthService $auth_service): array {
-    return self::buildConnectionEntry($auth_service) + self::buildKeyEntry($auth_service);
+    return self::buildConnectionEntry($auth_service)
+      + self::buildKeyEntry($auth_service)
+      + self::buildSyncEntry($auth_service);
+  }
+
+  /**
+   * The entry for module Keys whose sync export still holds a token.
+   */
+  protected static function buildSyncEntry(AuthService $auth_service): array {
+    $key_ids = $auth_service->getSyncKeysWithTokens();
+    if ($key_ids === []) {
+      return [];
+    }
+    return [
+      'ai_provider_quant_cloud_oauth_sync' => [
+        'title' => new TranslatableMarkup('Quant Cloud AI Provider config export'),
+        'value' => new TranslatableMarkup('Old token in the sync directory'),
+        'description' => new TranslatableMarkup('The exported Keys @keys in the config sync directory still hold a Quant Cloud token. Run drush cex to remove the old token from the sync directory, and commit the result.', [
+          '@keys' => implode(', ', $key_ids),
+        ]),
+        'severity' => self::severity(FALSE),
+      ],
+    ];
   }
 
   /**

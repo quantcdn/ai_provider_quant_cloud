@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\ai_provider_quant_cloud\Kernel;
 
+use Drupal\Core\Config\FileStorageFactory;
+use Drupal\Core\Database\Database;
 use Drupal\Core\Form\FormState;
+use Drupal\Core\Site\Settings;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\KernelTests\KernelTestBase;
 use Drupal\ai_provider_quant_cloud\Form\KeepConnectionForm;
@@ -217,7 +220,6 @@ class AuthServiceKeyStorageTest extends KernelTestBase {
     $this->setAuthSettings('oauth', AuthService::ACCESS_KEY_ID);
     $expires_at = time() + 86400;
     $this->container->get('state')->set(AuthService::LEGACY_EXPIRES_AT_STATE, $expires_at);
-    $this->container->get('state')->set(AuthService::LEGACY_FINGERPRINT_STATE, 'old-formula');
 
     ai_provider_quant_cloud_update_10004();
 
@@ -270,6 +272,106 @@ class AuthServiceKeyStorageTest extends KernelTestBase {
       $this->assertStringContainsString(AuthService::KEY_PROVIDER_ID, $raw);
     }
     $this->assertSame('access-1', $this->service()->getValidAccessToken());
+  }
+
+  /**
+   * A converted Key depends on this module, also after an import.
+   */
+  public function testConvertedKeyDependsOnModule(): void {
+    $this->service()->persistTokens(['access_token' => 'access-1', 'refresh_token' => 'refresh-1', 'expires_in' => 3600]);
+
+    foreach ([FALSE, TRUE] as $syncing) {
+      $key = Key::load(AuthService::ACCESS_KEY_ID);
+      $key->setSyncing($syncing);
+      $key->set('key_provider', 'config');
+      $key->set('key_provider_settings', ['key_value' => 'stale-access']);
+      $key->set('dependencies', []);
+      $key->save();
+
+      $raw = $this->container->get('config.storage')->read('key.key.' . AuthService::ACCESS_KEY_ID);
+      $this->assertContains('ai_provider_quant_cloud', $raw['dependencies']['module'] ?? []);
+    }
+  }
+
+  /**
+   * An import before the update rescues the ACTIVE value, not the import's.
+   */
+  public function testImportBeforeUpdateRescuesActiveValue(): void {
+    $this->createConfigKey(AuthService::ACCESS_KEY_ID, 'active-access');
+    $this->setAuthSettings('oauth', AuthService::ACCESS_KEY_ID);
+
+    $key = Key::load(AuthService::ACCESS_KEY_ID);
+    $key->setSyncing(TRUE);
+    $key->set('key_provider_settings', ['key_value' => 'old-export-access']);
+    $key->save();
+
+    $store = $this->container->get('ai_provider_quant_cloud.token_store');
+    $this->assertSame('active-access', $store->get(OAuthTokenStore::ACCESS_TOKEN));
+    $raw = $this->rawConfig('key.key.' . AuthService::ACCESS_KEY_ID);
+    $this->assertStringNotContainsString('old-export-access', $raw);
+    $this->assertStringNotContainsString('active-access', $raw);
+  }
+
+  /**
+   * The 1a0ad4f state fingerprint: a match is own, a mismatch is foreign.
+   */
+  public function testUpdateJudgesLegacyStateFingerprint(): void {
+    $db = Database::getConnectionInfo()['default'];
+    $prefix = is_array($db['prefix'] ?? '') ? ($db['prefix']['default'] ?? '') : ($db['prefix'] ?? '');
+    $own = hash('sha256', implode("\0", [
+      'auto',
+      (string) Settings::get('hash_salt', ''),
+      (string) ($db['host'] ?? ''),
+      (string) ($db['port'] ?? ''),
+      (string) ($db['database'] ?? ''),
+      (string) $prefix,
+      (string) $this->config('system.site')->get('uuid'),
+    ]));
+
+    foreach ([$own => NULL, 'another-site' => AuthService::RECONNECT_OTHER_SITE] as $legacy => $reason) {
+      $this->container->get('ai_provider_quant_cloud.token_store')->clear();
+      $this->createConfigKey(AuthService::ACCESS_KEY_ID, 'access-x');
+      $this->createConfigKey(AuthService::REFRESH_KEY_ID, 'refresh-x');
+      $this->setAuthSettings('oauth', AuthService::ACCESS_KEY_ID);
+      $this->container->get('state')->set(AuthService::LEGACY_FINGERPRINT_STATE, $legacy);
+
+      ai_provider_quant_cloud_update_10004();
+
+      $this->assertSame($reason, $this->service()->getReconnectReason());
+      Key::load(AuthService::ACCESS_KEY_ID)->delete();
+      Key::load(AuthService::REFRESH_KEY_ID)->delete();
+    }
+  }
+
+  /**
+   * The status report warns while the sync export holds a token.
+   */
+  public function testSyncExportWithTokenShowsWarning(): void {
+    $this->service()->persistTokens(['access_token' => 'access-1', 'refresh_token' => 'refresh-1', 'expires_in' => 3600]);
+    $this->assertArrayNotHasKey('ai_provider_quant_cloud_oauth_sync', ai_provider_quant_cloud_requirements('runtime'));
+
+    $old = $this->container->get('config.storage')->read('key.key.' . AuthService::ACCESS_KEY_ID);
+    $old['key_provider'] = 'config';
+    $old['key_provider_settings'] = ['key_value' => 'old-token'];
+    FileStorageFactory::getSync()->write('key.key.' . AuthService::ACCESS_KEY_ID, $old);
+
+    $requirements = ai_provider_quant_cloud_requirements('runtime');
+    $this->assertStringContainsString('drush cex', (string) $requirements['ai_provider_quant_cloud_oauth_sync']['description']);
+  }
+
+  /**
+   * Uninstall removes the stored tokens and the module Keys.
+   */
+  public function testUninstallRemovesTokens(): void {
+    $this->installSchema('user', ['users_data']);
+    // The ai module reads its settings when a provider module is removed.
+    $this->installConfig(['ai']);
+    $this->service()->persistTokens(['access_token' => 'access-1', 'refresh_token' => 'refresh-1', 'expires_in' => 3600]);
+
+    $this->container->get('module_installer')->uninstall(['ai_provider_quant_cloud']);
+
+    $this->assertSame([], $this->container->get('keyvalue')->get(OAuthTokenStore::COLLECTION)->getAll());
+    $this->assertNull(Key::load(AuthService::ACCESS_KEY_ID));
   }
 
   /**

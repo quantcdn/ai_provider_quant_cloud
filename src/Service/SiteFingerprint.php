@@ -48,6 +48,7 @@ class SiteFingerprint {
     'database' => 'database name',
     'prefix' => 'database table prefix',
     'uuid' => 'site UUID',
+    'legacy' => 'fingerprint from a development build',
   ];
 
   /**
@@ -85,13 +86,62 @@ class SiteFingerprint {
    *   Readable component names; empty when the fingerprints match.
    */
   public function getDifferences(array $stored): array {
+    if (isset($stored['legacy'])) {
+      // A development-build fingerprint that did not match this site.
+      return [$this->label('legacy')];
+    }
     $current = $this->compute();
     $names = array_keys($stored + $current);
-    $different = array_filter(
-      $names,
-      static fn(string $name) => !hash_equals((string) ($stored[$name] ?? ''), (string) ($current[$name] ?? '')),
-    );
+    $different = array_filter($names, static function (string $name) use ($stored, $current): bool {
+      // A hosting variable counts only when both sides have it: a value set
+      // for one context only must not split one site in two.
+      if (str_starts_with($name, 'env:') && (!isset($stored[$name]) || !isset($current[$name]))) {
+        return FALSE;
+      }
+      return !hash_equals((string) ($stored[$name] ?? ''), (string) ($current[$name] ?? ''));
+    });
     return array_values(array_map([$this, 'label'], $different));
+  }
+
+  /**
+   * The single-string fingerprint of development builds 154c5cf to 1fb7f73.
+   *
+   * Used only to recognise a token record that this site stored then.
+   */
+  public function computeLegacyStoreFormat(): string {
+    return $this->legacyHash(FALSE);
+  }
+
+  /**
+   * The state fingerprint of development build 1a0ad4f.
+   *
+   * That formula also used the database host and port.
+   */
+  public function computeLegacyStateFormat(): string {
+    return $this->legacyHash(TRUE);
+  }
+
+  /**
+   * The hash of a development-build formula.
+   */
+  protected function legacyHash(bool $with_host): string {
+    $site_id = (string) Settings::get('ai_provider_quant_cloud_site_id', '');
+    if ($site_id !== '') {
+      $parts = ['site_id', $site_id];
+    }
+    else {
+      $db = Database::getConnectionInfo()['default'] ?? [];
+      $prefix = $db['prefix'] ?? '';
+      $parts = ['auto', (string) Settings::get('hash_salt', '')];
+      if ($with_host) {
+        $parts[] = (string) ($db['host'] ?? '');
+        $parts[] = (string) ($db['port'] ?? '');
+      }
+      $parts[] = (string) ($db['database'] ?? '');
+      $parts[] = is_array($prefix) ? (string) ($prefix['default'] ?? '') : (string) $prefix;
+    }
+    $parts[] = (string) $this->configFactory->get('system.site')->get('uuid');
+    return hash('sha256', implode("\0", $parts));
   }
 
   /**
@@ -129,17 +179,17 @@ class SiteFingerprint {
   }
 
   /**
-   * Read an environment variable from getenv(), $_ENV or $_SERVER.
+   * Read an environment variable from getenv() or $_ENV.
    *
-   * PHP-FPM and the CLI expose the container environment in different
-   * places, depending on variables_order and the pool settings.
+   * $_SERVER is not read: on some hosts it carries web-only values that
+   * drush and cron do not see.
    */
   protected function readEnvironment(string $variable): string {
     $value = getenv($variable);
     if (is_string($value) && $value !== '') {
       return $value;
     }
-    return (string) ($_ENV[$variable] ?? $_SERVER[$variable] ?? '');
+    return (string) ($_ENV[$variable] ?? '');
   }
 
 }

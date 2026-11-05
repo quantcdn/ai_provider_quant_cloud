@@ -117,13 +117,6 @@ class AuthServiceTest extends UnitTestCase {
   protected ?string $refreshAtRelease = NULL;
 
   /**
-   * Seconds that the service paused, in order.
-   *
-   * @var int[]
-   */
-  protected array $pauses = [];
-
-  /**
    * Queued HTTP answers (Response or Throwable), used before $httpHandler.
    *
    * @var array
@@ -136,9 +129,9 @@ class AuthServiceTest extends UnitTestCase {
   protected bool $unmigratedAccessKey = FALSE;
 
   /**
-   * Whether the service runs as CLI (cron, drush) or as a web request.
+   * Whether the token store fails to save a token response.
    */
-  protected bool $cli = TRUE;
+  protected bool $failSave = FALSE;
 
   /**
    * Whether the database reports an open transaction.
@@ -309,51 +302,103 @@ class AuthServiceTest extends UnitTestCase {
    */
   public function testUnknownOutcomeKeepsTokensAndReturnsValidToken(): void {
     $this->setExpiresIn(30);
-    $this->httpQueue = [$this->timeout(), $this->timeout()];
+    $this->httpQueue = [$this->timeout()];
 
     $this->assertSame('access-old', $this->service()->getValidAccessToken());
     $this->assertSame('refresh-old', $this->store->get(OAuthTokenStore::REFRESH_TOKEN));
     $this->assertNull($this->store->get(OAuthTokenStore::REFUSAL));
-    $this->assertSame(['acquire', 'keepRunning', 'http', 'http', 'release'], $this->events);
-    $this->assertSame([15], $this->pauses);
+    // One send; nothing sleeps or retries in the same process.
+    $this->assertSame(['acquire', 'keepRunning', 'http', 'release'], $this->events);
+    $pending = $this->store->get(OAuthTokenStore::PENDING);
+    $this->assertSame(hash('sha256', 'refresh-old'), $pending['token']);
+    $this->assertSame(1, $pending['attempts']);
   }
 
   /**
-   * A timeout followed by a 200 recovers the lost rotation.
+   * A pending refresh younger than 45 s is not retried.
    */
-  public function testRecoveryRetryPersistsRecoveredPair(): void {
+  public function testPendingMarkerYoungerThan45SecondsWaits(): void {
+    $this->setExpiresIn(30);
+    $this->setPending(time() - 10, 'refresh-old');
+    $this->httpHandler = fn() => $this->tokenResponse('access-new', 'refresh-new');
+
+    $this->assertSame('access-old', $this->service()->getValidAccessToken());
+    $this->service()->refreshFromCron();
+    $this->assertSame([], $this->sentRefreshTokens);
+  }
+
+  /**
+   * After 45 s, the next process recovers the pair with the same token.
+   *
+   * The marker keeps the time of the first send.
+   */
+  public function testMarkerRetryAfter45SecondsRecoversPair(): void {
+    $this->setExpiresIn(30);
+    $this->acquireResults = [TRUE, TRUE];
     $this->httpQueue = [$this->timeout(), $this->tokenResponse('access-new', 'refresh-new')];
 
+    $this->service()->getValidAccessToken();
+    $this->agePending(50);
     $this->assertSame('access-new', $this->service()->getValidAccessToken());
 
     $this->assertSame(['refresh-old', 'refresh-old'], $this->sentRefreshTokens);
-    $this->assertSame([15], $this->pauses);
     $this->assertSame('refresh-new', $this->refreshAtRelease);
+    $this->assertNull($this->store->get(OAuthTokenStore::PENDING));
     $this->assertNull($this->store->get(OAuthTokenStore::RETRY_AFTER));
   }
 
   /**
-   * A 5xx and an unreadable 200 are unknown outcomes and get the retry.
+   * A marker is retried at most twice; it keeps its first send time.
    */
-  public function testServerErrorAndUnreadable200AreRetried(): void {
-    $this->httpQueue = [new Response(503), new Response(200, [], 'not json')];
+  public function testMarkerIsRetriedAtMostTwice(): void {
+    $this->setExpiresIn(30);
+    $this->acquireResults = [TRUE, TRUE, TRUE, TRUE];
+    $this->httpQueue = [new Response(503), new Response(200, [], 'not json'), $this->timeout()];
+    $service = $this->service();
 
-    $this->assertNull($this->service()->getValidAccessToken());
+    $service->getValidAccessToken();
+    $since = $this->store->get(OAuthTokenStore::PENDING)['since'];
+    $this->agePending(50);
+    $service->getValidAccessToken();
+    $this->agePending(50);
+    $service->getValidAccessToken();
+    $service->getValidAccessToken();
+    $service->refreshFromCron();
 
-    $this->assertCount(2, $this->sentRefreshTokens);
+    $this->assertCount(3, $this->sentRefreshTokens);
+    $pending = $this->store->get(OAuthTokenStore::PENDING);
+    $this->assertSame(3, $pending['attempts']);
+    $this->assertSame($since - 100, $pending['since']);
     $this->assertSame('refresh-old', $this->store->get(OAuthTokenStore::REFRESH_TOKEN));
   }
 
   /**
-   * A refusal on the retry is recorded as usual.
+   * A "just rotated" answer is an unknown outcome: marker and tokens stay.
+   */
+  public function testJustRotatedKeepsMarkerWithoutRefusal(): void {
+    $this->setExpiresIn(30);
+    $this->httpQueue = [$this->errorResponse('invalid_grant', 'Refresh token was just rotated; reload your stored tokens.')];
+
+    $this->assertSame('access-old', $this->service()->getValidAccessToken());
+
+    $this->assertNull($this->store->get(OAuthTokenStore::REFUSAL));
+    $this->assertSame(1, $this->store->get(OAuthTokenStore::PENDING)['attempts']);
+    $this->assertSame('refresh-old', $this->store->get(OAuthTokenStore::REFRESH_TOKEN));
+  }
+
+  /**
+   * A refusal on the marker retry is recorded and removes the marker.
    */
   public function testRefusalOnRetryIsRecorded(): void {
+    $this->acquireResults = [TRUE, TRUE];
     $this->httpQueue = [new Response(502), $this->errorResponse('invalid_grant', 'Refresh token not found')];
 
     $this->service()->getValidAccessToken();
+    $this->agePending(50);
+    $this->service()->getValidAccessToken();
 
     $this->assertSame('invalid_grant', $this->store->get(OAuthTokenStore::REFUSAL)['error']);
-    $this->assertNull($this->store->get(OAuthTokenStore::RETRY_AFTER));
+    $this->assertNull($this->store->get(OAuthTokenStore::PENDING));
   }
 
   /**
@@ -365,68 +410,34 @@ class AuthServiceTest extends UnitTestCase {
     $this->service()->getValidAccessToken();
 
     $this->assertCount(1, $this->sentRefreshTokens);
-    $this->assertSame([], $this->pauses);
+    $this->assertNull($this->store->get(OAuthTokenStore::PENDING));
   }
 
   /**
-   * After two unknown outcomes, web requests and cron back off.
+   * After the marker window, web requests and cron back off.
    */
-  public function testBackOffAfterTwoUnknownOutcomes(): void {
+  public function testBackOffAfterUnknownOutcome(): void {
     $this->setExpiresIn(30);
     $this->acquireResults = [TRUE, TRUE];
-    $this->httpQueue = [new Response(503), new Response(503)];
+    $this->httpQueue = [new Response(503)];
     $service = $this->service();
 
     $this->assertSame('access-old', $service->getValidAccessToken());
     $this->assertGreaterThanOrEqual(time() + 59, (int) $this->store->get(OAuthTokenStore::RETRY_AFTER));
     $this->assertGreaterThanOrEqual(time() + 599, (int) $this->store->get(OAuthTokenStore::CRON_RETRY_AFTER));
 
+    // The marker window has passed.
+    $this->agePending(300);
     $this->assertSame('access-old', $service->getValidAccessToken());
     $service->refreshFromCron();
-    $this->assertCount(2, $this->sentRefreshTokens);
+    $this->assertCount(1, $this->sentRefreshTokens);
 
-    // After the cron backoff, cron tries again; web requests may still wait.
+    // After the cron backoff, cron tries again.
     $this->store->set(OAuthTokenStore::CRON_RETRY_AFTER, time() - 1);
     $this->httpQueue = [$this->tokenResponse('access-new', 'refresh-new')];
     $service->refreshFromCron();
-    $this->assertCount(3, $this->sentRefreshTokens);
+    $this->assertCount(2, $this->sentRefreshTokens);
     $this->assertNull($this->store->get(OAuthTokenStore::RETRY_AFTER));
-    $this->assertNull($this->store->get(OAuthTokenStore::PENDING));
-  }
-
-  /**
-   * A web request does not sleep or retry; it leaves a pending marker.
-   */
-  public function testWebUnknownOutcomeLeavesPendingMarker(): void {
-    $this->cli = FALSE;
-    $this->setExpiresIn(30);
-    $this->httpQueue = [$this->timeout()];
-
-    $this->assertSame('access-old', $this->service()->getValidAccessToken());
-
-    $this->assertCount(1, $this->sentRefreshTokens);
-    $this->assertSame([], $this->pauses);
-    $pending = $this->store->get(OAuthTokenStore::PENDING);
-    $this->assertSame(hash('sha256', 'refresh-old'), $pending['token']);
-    $this->assertSame(1, $pending['attempts']);
-    $this->assertSame(['acquire', 'keepRunning', 'http', 'release'], $this->events);
-  }
-
-  /**
-   * The next process retries a recent pending refresh at once.
-   *
-   * It ignores the backoff and the expiry, and it recovers the pair.
-   */
-  public function testNextProcessRecoversPendingRefresh(): void {
-    $this->cli = FALSE;
-    $this->setExpiresIn(30);
-    $this->acquireResults = [TRUE, TRUE];
-    $this->httpQueue = [$this->timeout(), $this->tokenResponse('access-new', 'refresh-new')];
-
-    $this->service()->getValidAccessToken();
-    $this->assertSame('access-new', $this->service()->getValidAccessToken());
-
-    $this->assertSame(['refresh-old', 'refresh-old'], $this->sentRefreshTokens);
     $this->assertNull($this->store->get(OAuthTokenStore::PENDING));
   }
 
@@ -449,19 +460,55 @@ class AuthServiceTest extends UnitTestCase {
     $this->setPending(time() - 300, 'refresh-old');
     $this->assertSame('access-old', $this->service()->getValidAccessToken());
 
-    $this->setPending(time(), 'other');
+    $this->setPending(time() - 60, 'other');
     $this->assertSame('access-old', $this->service()->getValidAccessToken());
     $this->assertSame([], $this->sentRefreshTokens);
   }
 
   /**
-   * The lock outlives a refresh, the recovery pause and the retry.
+   * If the new pair can not be saved, the new access token is not used.
    */
-  public function testLockLifetimeCoversRecovery(): void {
-    $class = new \ReflectionClass(AuthService::class);
-    $needed = 2 * $class->getConstant('REFRESH_HTTP_TIMEOUT') + $class->getConstant('RECOVERY_DELAY');
+  public function testSaveFailureKeepsSuccessorUnused(): void {
+    $this->setExpiresIn(30);
+    $this->failSave = TRUE;
+    $this->httpQueue = [$this->tokenResponse('access-new', 'refresh-new')];
 
-    $this->assertGreaterThan($needed, $class->getConstant('REFRESH_LOCK_TIMEOUT'));
+    $this->assertSame('access-old', $this->service()->getValidAccessToken());
+    $this->assertSame(hash('sha256', 'refresh-old'), $this->store->get(OAuthTokenStore::PENDING)['token']);
+    $this->assertSame('refresh-old', $this->store->get(OAuthTokenStore::REFRESH_TOKEN));
+  }
+
+  /**
+   * The keep-running step works when the host disables ignore_user_abort.
+   */
+  public function testKeepRunningWithoutIgnoreUserAbort(): void {
+    $before = ignore_user_abort();
+    $service = $this->service();
+    $service->realKeepRunning = TRUE;
+    $service->ignoreUserAbortAvailable = FALSE;
+    $this->setExpiresIn(30);
+    $this->httpQueue = [$this->tokenResponse('access-new', 'refresh-new')];
+
+    $this->assertSame('access-new', $service->getValidAccessToken());
+    $this->assertSame($before, ignore_user_abort());
+  }
+
+  /**
+   * The lock outlives one refresh request.
+   */
+  public function testLockLifetimeCoversOneRequest(): void {
+    $class = new \ReflectionClass(AuthService::class);
+
+    $this->assertGreaterThan($class->getConstant('REFRESH_HTTP_TIMEOUT'), $class->getConstant('REFRESH_LOCK_TIMEOUT'));
+  }
+
+  /**
+   * Make the pending marker older by the given seconds.
+   */
+  protected function agePending(int $seconds): void {
+    $pending = $this->store->get(OAuthTokenStore::PENDING);
+    $pending['since'] -= $seconds;
+    $this->store->set(OAuthTokenStore::PENDING, $pending);
   }
 
   /**
@@ -700,6 +747,72 @@ class AuthServiceTest extends UnitTestCase {
   }
 
   /**
+   * A string fingerprint that matches the old formula here is this site's.
+   *
+   * It is restamped per component.
+   */
+  public function testLegacyStringFingerprintOfThisSiteIsAdopted(): void {
+    $this->store->set(OAuthTokenStore::FINGERPRINT, $this->legacyStoreHash('salt-prod'));
+    $service = $this->service();
+
+    $this->assertNull($service->getReconnectReason());
+    $this->assertSame($service->getSiteFingerprint(), $this->store->get(OAuthTokenStore::FINGERPRINT));
+  }
+
+  /**
+   * A string fingerprint from another site blocks the refresh.
+   */
+  public function testLegacyStringFingerprintOfAnotherSiteIsForeign(): void {
+    $this->store->set(OAuthTokenStore::FINGERPRINT, $this->legacyStoreHash('salt-other'));
+    $this->httpHandler = fn() => $this->tokenResponse('access-new', 'refresh-new');
+    $service = $this->service();
+
+    $this->assertSame(AuthService::RECONNECT_OTHER_SITE, $service->getReconnectReason());
+    $this->assertSame(['fingerprint from a development build'], $service->getFingerprintDifferences());
+    $service->refreshFromCron();
+    $this->assertSame([], $this->sentRefreshTokens);
+  }
+
+  /**
+   * The string fingerprint of builds 154c5cf to 1fb7f73, for a hash salt.
+   */
+  protected function legacyStoreHash(string $salt): string {
+    $db = Database::getConnectionInfo()['default'] ?? [];
+    $parts = [
+      'auto',
+      $salt,
+      (string) ($db['database'] ?? ''),
+      (string) ($db['prefix'] ?? ''),
+      'site-uuid',
+    ];
+    return hash('sha256', implode("\0", $parts));
+  }
+
+  /**
+   * A hosting variable seen on one side only does not split the site.
+   *
+   * $_SERVER is not read for hosting variables.
+   */
+  public function testHostingVariableOnOneSideOnlyIsIgnored(): void {
+    $this->store->set(OAuthTokenStore::FINGERPRINT, $this->service()->getSiteFingerprint());
+    try {
+      putenv('PANTHEON_ENVIRONMENT=live');
+      $this->assertSame([], $this->service()->getFingerprintDifferences());
+    }
+    finally {
+      putenv('PANTHEON_ENVIRONMENT');
+    }
+
+    $_SERVER['AH_SITE_ENVIRONMENT'] = 'prod';
+    try {
+      $this->assertArrayNotHasKey('env:AH_SITE_ENVIRONMENT', $this->service()->getSiteFingerprint());
+    }
+    finally {
+      unset($_SERVER['AH_SITE_ENVIRONMENT']);
+    }
+  }
+
+  /**
    * Hosting environment variables are part of the fingerprint.
    */
   public function testHostingEnvironmentVariableChangesFingerprint(): void {
@@ -766,13 +879,30 @@ class AuthServiceTest extends UnitTestCase {
       $this->entityTypeManager(),
       $state,
       $this->lock(),
-      new OAuthTokenStore($this->keyValue),
+      $this->tokenStoreForService(),
       $database,
     );
-    $service->pauses = &$this->pauses;
     $service->events = &$this->events;
-    $service->cli = $this->cli;
     return $service;
+  }
+
+  /**
+   * The token store for the service; it can fail to save.
+   */
+  protected function tokenStoreForService(): OAuthTokenStore {
+    if (!$this->failSave) {
+      return new OAuthTokenStore($this->keyValue);
+    }
+    return new class($this->keyValue) extends OAuthTokenStore {
+
+      /**
+       * {@inheritdoc}
+       */
+      public function saveTokens(array $token_data): void {
+        throw new \RuntimeException('The database is gone.');
+      }
+
+    };
   }
 
   /**
@@ -934,13 +1064,6 @@ class AuthServiceTest extends UnitTestCase {
 class TestableAuthService extends AuthService {
 
   /**
-   * Seconds paused, in order.
-   *
-   * @var int[]
-   */
-  public array $pauses = [];
-
-  /**
    * The test's event list.
    *
    * @var string[]
@@ -948,29 +1071,30 @@ class TestableAuthService extends AuthService {
   public array $events = [];
 
   /**
-   * Whether to report a CLI process.
+   * Whether to run the real keep-running step.
    */
-  public bool $cli = TRUE;
+  public bool $realKeepRunning = FALSE;
 
   /**
-   * {@inheritdoc}
+   * What canIgnoreUserAbort() reports.
    */
-  protected function pause(int $seconds): void {
-    $this->pauses[] = $seconds;
-  }
+  public bool $ignoreUserAbortAvailable = TRUE;
 
   /**
    * {@inheritdoc}
    */
   protected function keepRunning(): void {
     $this->events[] = 'keepRunning';
+    if ($this->realKeepRunning) {
+      parent::keepRunning();
+    }
   }
 
   /**
    * {@inheritdoc}
    */
-  protected function isCli(): bool {
-    return $this->cli;
+  protected function canIgnoreUserAbort(): bool {
+    return $this->ignoreUserAbortAvailable;
   }
 
 }

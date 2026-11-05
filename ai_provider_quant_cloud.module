@@ -69,7 +69,9 @@ function ai_provider_quant_cloud_cron() {
  * back into active config.
  */
 function ai_provider_quant_cloud_key_presave(KeyInterface $key) {
-  \Drupal::service('ai_provider_quant_cloud.auth')->protectModuleKey($key);
+  // EntityBase::getOriginal() exists from drupal:11.2.
+  $original = method_exists($key, 'getOriginal') ? $key->getOriginal() : ($key->original ?? NULL);
+  \Drupal::service('ai_provider_quant_cloud.auth')->protectModuleKey($key, $original instanceof KeyInterface ? $original : NULL);
 }
 
 /**
