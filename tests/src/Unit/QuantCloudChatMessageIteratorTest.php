@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\ai_provider_quant_cloud\Unit;
 
+use Drupal\Core\DependencyInjection\ContainerBuilder;
+use Drupal\ai\Service\HostnameFilter;
 use Drupal\ai_provider_quant_cloud\QuantCloudChatMessageIterator;
 use Drupal\ai_provider_quant_cloud\StreamedToolCall;
 use Drupal\Tests\UnitTestCase;
@@ -11,6 +13,7 @@ use GuzzleHttp\Psr7\Utils;
 use PHPUnit\Framework\Attributes\Group;
 use Psr\Log\AbstractLogger;
 use Psr\Log\NullLogger;
+use Symfony\Component\EventDispatcher\EventDispatcher;
 
 /**
  * Tests the Quant Cloud SSE iterator's frame-by-frame parsing.
@@ -23,6 +26,23 @@ use Psr\Log\NullLogger;
  */
 #[Group('ai_provider_quant_cloud')]
 class QuantCloudChatMessageIteratorTest extends UnitTestCase {
+
+  /**
+   * {@inheritdoc}
+   */
+  protected function setUp(): void {
+    parent::setUp();
+    // From drupal/ai 1.5, getIterator() buffers text and runs it through the
+    // hostname filter service. A pass-through filter keeps the text as sent.
+    $container = new ContainerBuilder();
+    $container->set('event_dispatcher', new EventDispatcher());
+    if (class_exists(HostnameFilter::class)) {
+      $filter = $this->createMock(HostnameFilter::class);
+      $filter->method('filterText')->willReturnArgument(0);
+      $container->set('ai.hostname_filter_service', $filter);
+    }
+    \Drupal::setContainer($container);
+  }
 
   /**
    * Build an iterator from a string of newline-separated SSE lines.
@@ -42,11 +62,44 @@ class QuantCloudChatMessageIteratorTest extends UnitTestCase {
   /**
    * Consume the iterator and return its emitted messages.
    *
+   * This goes through getIterator(), as the AI module's consumers do. Since
+   * drupal/ai 1.5, doIterate() alone returns buffered (empty) text chunks
+   * and getIterator() releases the text.
+   *
    * @return \Drupal\ai\OperationType\Chat\StreamedChatMessageInterface[]
    *   Messages emitted during iteration.
    */
   protected function drain(QuantCloudChatMessageIterator $iterator): array {
-    return iterator_to_array($iterator->doIterate(), FALSE);
+    return iterator_to_array($iterator->getIterator(), FALSE);
+  }
+
+  /**
+   * The text-bearing messages, as a list of [role, text] pairs.
+   *
+   * @param \Drupal\ai\OperationType\Chat\StreamedChatMessageInterface[] $messages
+   *   Emitted messages.
+   *
+   * @return array<int,array{0: string, 1: string}>
+   *   Role and text of each message that carries text.
+   */
+  protected function textMessages(array $messages): array {
+    $pairs = [];
+    foreach ($messages as $message) {
+      if ($message->getText() !== '') {
+        $pairs[] = [$message->getRole(), $message->getText()];
+      }
+    }
+    return $pairs;
+  }
+
+  /**
+   * The joined text of all emitted messages.
+   *
+   * @param \Drupal\ai\OperationType\Chat\StreamedChatMessageInterface[] $messages
+   *   Emitted messages.
+   */
+  protected function joinedText(array $messages): string {
+    return implode('', array_column($this->textMessages($messages), 1));
   }
 
   /**
@@ -69,10 +122,11 @@ class QuantCloudChatMessageIteratorTest extends UnitTestCase {
 
     $messages = $this->drain($this->makeIterator($sse));
 
-    $this->assertCount(2, $messages);
-    $this->assertSame('assistant', $messages[0]->getRole());
-    $this->assertSame('Hello, ', $messages[0]->getText());
-    $this->assertSame('world!', $messages[1]->getText());
+    // drupal/ai 1.5+ may re-chunk the text, so assert the text and roles.
+    $this->assertSame('Hello, world!', $this->joinedText($messages));
+    $this->assertSame(['assistant'], array_values(array_unique(
+      array_column($this->textMessages($messages), 0),
+    )));
   }
 
   /**
@@ -235,16 +289,9 @@ class QuantCloudChatMessageIteratorTest extends UnitTestCase {
 
     $messages = $this->drain($this->makeIterator($sse));
 
-    // We expect exactly one assistant text message — the delta — and no
-    // second message echoing response.content back through the pipeline.
-    $textOutputs = array_map(
-      static fn ($message): string => $message->getText(),
-      $messages,
-    );
-    $this->assertSame(['Hello, world!'], array_values(array_filter(
-      $textOutputs,
-      static fn (string $text): bool => $text !== '',
-    )));
+    // The text appears once — from the delta — and response.content is not
+    // echoed back through the pipeline.
+    $this->assertSame('Hello, world!', $this->joinedText($messages));
   }
 
   /**
@@ -272,11 +319,16 @@ class QuantCloudChatMessageIteratorTest extends UnitTestCase {
     $iterator = $this->makeIterator($sse);
     $messages = $this->drain($iterator);
 
-    $this->assertCount(2, $messages);
-    $this->assertSame('', $messages[1]->getText());
-    $this->assertSame(12, $messages[1]->getInputTokenUsage());
-    $this->assertSame(5, $messages[1]->getOutputTokenUsage());
-    $this->assertSame(17, $messages[1]->getTotalTokenUsage());
+    $this->assertSame('Hello, world!', $this->joinedText($messages));
+    $usage_messages = array_values(array_filter(
+      $messages,
+      static fn ($message): bool => $message->getTotalTokenUsage() !== NULL,
+    ));
+    $this->assertCount(1, $usage_messages);
+    $this->assertSame('', $usage_messages[0]->getText());
+    $this->assertSame(12, $usage_messages[0]->getInputTokenUsage());
+    $this->assertSame(5, $usage_messages[0]->getOutputTokenUsage());
+    $this->assertSame(17, $usage_messages[0]->getTotalTokenUsage());
 
     $output = $iterator->reconstructChatOutput();
     $this->assertSame('Hello, world!', $output->getNormalized()->getText());
