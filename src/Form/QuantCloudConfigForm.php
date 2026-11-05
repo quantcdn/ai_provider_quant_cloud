@@ -3,6 +3,7 @@
 namespace Drupal\ai_provider_quant_cloud\Form;
 
 use Drupal\ai_provider_quant_cloud\Client\QuantCloudClient;
+use Drupal\ai_provider_quant_cloud\Service\AuthService;
 use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Url;
@@ -92,6 +93,8 @@ class QuantCloudConfigForm extends ConfigFormBase {
         'library' => ['ai_provider_quant_cloud/admin'],
       ],
     ];
+
+    $this->addReconnectWarning($form);
 
     // Check if already OAuth connected
     $is_oauth_connected = $config->get('auth.method') === 'oauth' && $config->get('auth.access_token_key');
@@ -436,6 +439,33 @@ class QuantCloudConfigForm extends ConfigFormBase {
     ];
 
     return parent::buildForm($form, $form_state);
+  }
+
+  /**
+   * Show why and how to reconnect, when the stored tokens need it.
+   */
+  protected function addReconnectWarning(array &$form): void {
+    $reason = $this->authService->getReconnectReason();
+    if ($reason === NULL) {
+      return;
+    }
+    $form['auth_section']['reconnect_warning'] = [
+      '#type' => 'container',
+      '#weight' => -20,
+      '#attributes' => [
+        'class' => ['messages', 'messages--warning'],
+        'role' => 'alert',
+      ],
+      'text' => [
+        '#plain_text' => AuthService::reconnectMessage($reason),
+        '#suffix' => ' ',
+      ],
+      'link' => [
+        '#type' => 'link',
+        '#title' => $this->t('Reconnect to Quant Cloud'),
+        '#url' => Url::fromRoute('ai_provider_quant_cloud.oauth_connect'),
+      ],
+    ];
   }
 
   /**

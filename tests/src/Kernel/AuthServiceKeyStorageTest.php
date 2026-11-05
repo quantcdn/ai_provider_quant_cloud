@@ -23,6 +23,15 @@ class AuthServiceKeyStorageTest extends KernelTestBase {
   protected static $modules = ['system', 'key', 'ai', 'ai_provider_quant_cloud'];
 
   /**
+   * {@inheritdoc}
+   */
+  protected function setUp(): void {
+    parent::setUp();
+    $this->installConfig(['system']);
+    $this->container->get('module_handler')->loadInclude('ai_provider_quant_cloud', 'install');
+  }
+
+  /**
    * Build the service from the container services.
    */
   protected function service(): AuthService {
@@ -63,6 +72,39 @@ class AuthServiceKeyStorageTest extends KernelTestBase {
     $this->assertSame('refresh-2', Key::load(AuthService::REFRESH_KEY_ID)->getKeyValue(TRUE));
     $this->assertSame('access-2', $service->getAccessToken(TRUE));
     $this->assertSame('access-2', $service->getValidAccessToken());
+  }
+
+  /**
+   * A database copy with another settings.php does not use the tokens.
+   */
+  public function testCopiedTokensNeedReconnect(): void {
+    $this->service()->persistTokens([
+      'access_token' => 'access-1',
+      'refresh_token' => 'refresh-1',
+      'expires_in' => 3600,
+    ]);
+    $this->assertSame([], ai_provider_quant_cloud_requirements('runtime'));
+
+    $this->setSetting('hash_salt', 'a-different-environment');
+    $service = $this->service();
+
+    $this->assertNull($service->getValidAccessToken());
+    $requirements = ai_provider_quant_cloud_requirements('runtime');
+    $this->assertArrayHasKey('ai_provider_quant_cloud_oauth', $requirements);
+    $this->assertStringContainsString('belong to another site', (string) $requirements['ai_provider_quant_cloud_oauth']['description']);
+  }
+
+  /**
+   * An OAuth token without a refresh token shows a status report warning.
+   */
+  public function testLegacyTokenShowsRequirementWarning(): void {
+    $this->service()->persistTokens(['access_token' => 'legacy-access']);
+
+    $requirements = ai_provider_quant_cloud_requirements('runtime');
+
+    $this->assertArrayHasKey('ai_provider_quant_cloud_oauth', $requirements);
+    $this->assertStringContainsString('Reconnect Quant Cloud to switch to refreshable tokens', (string) $requirements['ai_provider_quant_cloud_oauth']['description']);
+    $this->assertSame('legacy-access', $this->service()->getValidAccessToken());
   }
 
 }

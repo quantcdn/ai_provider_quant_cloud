@@ -12,13 +12,15 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Lock\LockBackendInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\Core\Logger\LoggerChannelInterface;
+use Drupal\Core\Site\Settings;
 use Drupal\Core\State\StateInterface;
 use Drupal\Tests\UnitTestCase;
 use Drupal\ai_provider_quant_cloud\Service\AuthService;
 use Drupal\key\KeyInterface;
 use Drupal\key\KeyRepositoryInterface;
 use GuzzleHttp\Client;
-use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\Attributes\Group;
 
@@ -136,7 +138,10 @@ class AuthServiceTest extends UnitTestCase {
       'auth.access_token_key' => AuthService::ACCESS_KEY_ID,
       'auth.refresh_token_key' => AuthService::REFRESH_KEY_ID,
       'platform' => 'quantgov',
+      // system.site:uuid, read through the same config mock.
+      'uuid' => 'site-uuid',
     ];
+    new Settings(['hash_salt' => 'salt-prod']);
     $this->acquireResults = [TRUE];
   }
 
@@ -258,9 +263,90 @@ class AuthServiceTest extends UnitTestCase {
       'save:' . AuthService::REFRESH_KEY_ID,
       'save:' . AuthService::ACCESS_KEY_ID,
       'state:set',
+      'state:set',
       'config:save',
       'release',
     ], $this->events);
+  }
+
+  /**
+   * An unknown refresh outcome keeps the tokens and uses the valid token.
+   */
+  public function testUnknownOutcomeKeepsTokensAndReturnsValidToken(): void {
+    $this->stateValues[AuthService::EXPIRES_AT_STATE] = time() + 30;
+    $this->httpHandler = function (): Response {
+      throw new ConnectException('cURL error 28: Operation timed out', new Request('POST', 'https://dash.quantgov.cloud/oauth/token'));
+    };
+
+    $token = $this->service()->getValidAccessToken();
+
+    $this->assertSame('access-old', $token);
+    $this->assertSame(['refresh-old'], $this->sentRefreshTokens);
+    $this->assertSame('refresh-old', $this->stored[AuthService::REFRESH_KEY_ID]);
+    $this->assertNotContains('state:set', $this->events);
+    $this->assertSame('release', end($this->events));
+  }
+
+  /**
+   * Tokens copied from another site are never used or refreshed.
+   */
+  public function testTokensFromAnotherSiteAreNotUsedOrRefreshed(): void {
+    $this->stateValues[AuthService::FINGERPRINT_STATE] = $this->service()->getSiteFingerprint();
+    // The copy has its own settings.php, so its fingerprint differs.
+    new Settings(['hash_salt' => 'salt-staging']);
+    $service = $this->service();
+
+    $this->assertNull($service->getValidAccessToken());
+    $this->assertSame([], $this->sentRefreshTokens);
+    $this->assertSame([], $this->events);
+    $this->assertSame(AuthService::RECONNECT_OTHER_SITE, $service->getReconnectReason());
+    $this->assertStringContainsString('Reconnect this site', implode("\n", $this->logs));
+  }
+
+  /**
+   * A matching fingerprint refreshes as normal.
+   */
+  public function testMatchingFingerprintRefreshes(): void {
+    $this->stateValues[AuthService::FINGERPRINT_STATE] = $this->service()->getSiteFingerprint();
+    $this->httpHandler = fn() => $this->tokenResponse('access-new', 'refresh-new');
+
+    $this->assertSame('access-new', $this->service()->getValidAccessToken());
+    $this->assertNull($this->service()->getReconnectReason());
+  }
+
+  /**
+   * Tokens without a fingerprint keep working and get one on refresh.
+   */
+  public function testMissingFingerprintIsStampedOnRefresh(): void {
+    $this->httpHandler = fn() => $this->tokenResponse('access-new', 'refresh-new');
+    $service = $this->service();
+
+    $this->assertSame('access-new', $service->getValidAccessToken());
+    $this->assertSame($service->getSiteFingerprint(), $this->stateValues[AuthService::FINGERPRINT_STATE]);
+  }
+
+  /**
+   * The site ID setting replaces the automatic fingerprint parts.
+   */
+  public function testSiteIdSettingChangesFingerprint(): void {
+    $automatic = $this->service()->getSiteFingerprint();
+    new Settings(['hash_salt' => 'salt-prod', 'ai_provider_quant_cloud_site_id' => 'prod']);
+    $prod = $this->service()->getSiteFingerprint();
+    new Settings(['hash_salt' => 'salt-prod', 'ai_provider_quant_cloud_site_id' => 'staging']);
+
+    $this->assertNotSame($automatic, $prod);
+    $this->assertNotSame($prod, $this->service()->getSiteFingerprint());
+  }
+
+  /**
+   * An OAuth connection without a refresh token must reconnect.
+   */
+  public function testLegacyTokenNeedsReconnect(): void {
+    $this->settings['auth.refresh_token_key'] = NULL;
+
+    $this->assertSame(AuthService::RECONNECT_LEGACY_TOKEN, $this->service()->getReconnectReason());
+    $this->settings['auth.method'] = 'manual';
+    $this->assertNull($this->service()->getReconnectReason());
   }
 
   /**
@@ -353,7 +439,7 @@ class AuthServiceTest extends UnitTestCase {
   /**
    * HTTP client that records sent refresh tokens.
    */
-  protected function httpClient(): ClientInterface {
+  protected function httpClient(): Client {
     $client = $this->createMock(Client::class);
     $client->method('post')->willReturnCallback(function (string $url, array $options): Response {
       $this->sentRefreshTokens[] = $options['form_params']['refresh_token'];

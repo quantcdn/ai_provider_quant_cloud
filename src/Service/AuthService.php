@@ -5,10 +5,13 @@ namespace Drupal\ai_provider_quant_cloud\Service;
 use Drupal\Core\Cache\CacheBackendInterface;
 use Drupal\Core\Cache\ChainedFastBackend;
 use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Database\Database;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Lock\LockBackendInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
+use Drupal\Core\Site\Settings;
 use Drupal\Core\State\StateInterface;
+use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\key\KeyInterface;
 use Drupal\key\KeyRepositoryInterface;
 use GuzzleHttp\ClientInterface;
@@ -34,6 +37,21 @@ class AuthService {
    * State key that holds the absolute access-token expiry (Unix time).
    */
   public const EXPIRES_AT_STATE = 'quant_cloud_oauth_expires_at';
+
+  /**
+   * State key that holds the fingerprint of the site that owns the tokens.
+   */
+  public const FINGERPRINT_STATE = 'quant_cloud_oauth_site_fingerprint';
+
+  /**
+   * Reconnect reason: the stored tokens belong to another site.
+   */
+  public const RECONNECT_OTHER_SITE = 'other_site';
+
+  /**
+   * Reconnect reason: OAuth is connected but no refresh token is stored.
+   */
+  public const RECONNECT_LEGACY_TOKEN = 'legacy_token';
 
   /**
    * Lock name that serializes refresh-token use across processes.
@@ -366,6 +384,7 @@ class AuthService {
 
     $this->writeKey(self::ACCESS_KEY_ID, $token_data['access_token'], 'Quant Cloud — OAuth Access Token');
     $this->writeExpiry($token_data['expires_in'] ?? NULL);
+    $this->state->set(self::FINGERPRINT_STATE, $this->getSiteFingerprint());
 
     $config = $this->configFactory->getEditable('ai_provider_quant_cloud.settings');
     $config->set('auth.method', 'oauth');
@@ -539,7 +558,16 @@ class AuthService {
    */
   public function getValidAccessToken(): ?string {
     $access = $this->getAccessToken();
-    if (!$access || !$this->isOauthMode() || !$this->isAccessTokenExpiring()) {
+    if (!$access || !$this->isOauthMode()) {
+      return $access;
+    }
+
+    if ($this->isTokenFromAnotherSite()) {
+      $this->logger->warning('The stored Quant Cloud OAuth tokens belong to another site, for example after a database copy. They are not used or refreshed. Reconnect this site to Quant Cloud.');
+      return NULL;
+    }
+
+    if (!$this->isAccessTokenExpiring()) {
       return $access;
     }
 
@@ -660,6 +688,91 @@ class AuthService {
       $this->entityTypeManager->getStorage('key')->resetCache(array_values($key_ids));
     }
     $this->state->resetCache();
+  }
+
+  /**
+   * Why this site must reconnect to Quant Cloud, if it must.
+   *
+   * @return string|null
+   *   One of the RECONNECT_* constants, or NULL when no reconnect is needed.
+   */
+  public function getReconnectReason(): ?string {
+    if (!$this->isOauthMode() || !$this->getAccessToken()) {
+      return NULL;
+    }
+    if ($this->isTokenFromAnotherSite()) {
+      return self::RECONNECT_OTHER_SITE;
+    }
+    return $this->getRefreshToken() ? NULL : self::RECONNECT_LEGACY_TOKEN;
+  }
+
+  /**
+   * The text that tells an administrator why and how to reconnect.
+   *
+   * @param string $reason
+   *   One of the RECONNECT_* constants.
+   */
+  public static function reconnectMessage(string $reason): TranslatableMarkup {
+    if ($reason === self::RECONNECT_OTHER_SITE) {
+      return new TranslatableMarkup('The Quant Cloud OAuth tokens on this site belong to another site, for example after a database copy. This site does not use or refresh them. Reconnect this site to Quant Cloud.');
+    }
+    return new TranslatableMarkup('Reconnect Quant Cloud to switch to refreshable tokens. This site uses an older OAuth token that does not refresh, and Quant Cloud will retire these tokens.');
+  }
+
+  /**
+   * Whether the stored tokens were issued to a different site.
+   *
+   * A copy of the database (for example production to staging) carries the
+   * tokens and their fingerprint. The copy computes a different fingerprint,
+   * so it never sends the shared refresh token. Tokens stored before the
+   * fingerprint existed have none; they get one on the next refresh or
+   * connect.
+   */
+  public function isTokenFromAnotherSite(): bool {
+    $stored = $this->state->get(self::FINGERPRINT_STATE);
+    if (!is_string($stored) || $stored === '') {
+      return FALSE;
+    }
+    return !hash_equals($stored, $this->getSiteFingerprint());
+  }
+
+  /**
+   * A fingerprint of this site that a database copy does not carry.
+   *
+   * The site UUID is in the database, so a copy keeps it. The other parts
+   * come from settings.php and the database connection, which a copy to
+   * another environment does not take with it. The base URL is not used:
+   * drush and cron often have none, and one site can have many host names.
+   * $settings['ai_provider_quant_cloud_site_id'] replaces the automatic
+   * parts, for environments that share settings and database coordinates.
+   */
+  public function getSiteFingerprint(): string {
+    $site_id = (string) Settings::get('ai_provider_quant_cloud_site_id', '');
+    $parts = $site_id !== '' ? ['site_id', $site_id] : $this->getSiteIdentityParts();
+    $parts[] = (string) $this->configFactory->get('system.site')->get('uuid');
+    return hash('sha256', implode("\0", $parts));
+  }
+
+  /**
+   * The automatic, environment-specific parts of the site fingerprint.
+   *
+   * The database password is left out, so a password rotation does not
+   * disconnect the site.
+   *
+   * @return string[]
+   *   The hash salt and the default database host, port, name and prefix.
+   */
+  protected function getSiteIdentityParts(): array {
+    $db = Database::getConnectionInfo()['default'] ?? [];
+    $prefix = $db['prefix'] ?? '';
+    return [
+      'auto',
+      (string) Settings::get('hash_salt', ''),
+      (string) ($db['host'] ?? ''),
+      (string) ($db['port'] ?? ''),
+      (string) ($db['database'] ?? ''),
+      is_array($prefix) ? (string) ($prefix['default'] ?? '') : (string) $prefix,
+    ];
   }
 
   /**

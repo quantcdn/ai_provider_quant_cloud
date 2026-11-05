@@ -135,7 +135,10 @@ class OAuthController extends ControllerBase {
       }
     }
 
-    $this->state()->delete('quant_cloud_oauth_expires_at');
+    $this->state()->deleteMultiple([
+      AuthService::EXPIRES_AT_STATE,
+      AuthService::FINGERPRINT_STATE,
+    ]);
 
     $config = \Drupal::configFactory()->getEditable('ai_provider_quant_cloud.settings');
     $config->set('auth.method', 'manual');

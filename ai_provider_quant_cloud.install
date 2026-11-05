@@ -7,6 +7,43 @@ declare(strict_types=1);
  * Install and update hooks for the Quant Cloud AI Provider module.
  */
 
+use Drupal\Core\Extension\Requirement\RequirementSeverity;
+use Drupal\Core\Url;
+use Drupal\ai_provider_quant_cloud\Service\AuthService;
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_provider_quant_cloud_requirements($phase): array {
+  if ($phase !== 'runtime') {
+    return [];
+  }
+  $reason = \Drupal::service('ai_provider_quant_cloud.auth')->getReconnectReason();
+  if ($reason === NULL) {
+    return [];
+  }
+
+  $is_error = $reason === AuthService::RECONNECT_OTHER_SITE;
+  // RequirementSeverity exists from drupal:11.2; drupal:12 requires it.
+  $has_enum = class_exists(RequirementSeverity::class);
+  $severity = $is_error ? 2 : 1;
+  if ($has_enum) {
+    $severity = $is_error ? RequirementSeverity::Error : RequirementSeverity::Warning;
+  }
+
+  return [
+    'ai_provider_quant_cloud_oauth' => [
+      'title' => t('Quant Cloud AI Provider'),
+      'value' => t('Reconnect required'),
+      'description' => t('@message <a href=":url">Reconnect to Quant Cloud</a>.', [
+        '@message' => AuthService::reconnectMessage($reason),
+        ':url' => Url::fromRoute('ai_provider_quant_cloud.oauth_connect')->toString(),
+      ]),
+      'severity' => $severity,
+    ],
+  ];
+}
+
 /**
  * Raise chat defaults for longer agent and tool-use responses.
  */
