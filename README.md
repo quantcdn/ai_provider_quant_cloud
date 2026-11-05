@@ -104,9 +104,14 @@ not in configuration. The Key entities `quant_cloud_oauth_access_token` and
 `quant_cloud_oauth_refresh_token` only point at that store, so
 `drush cex` exports no token and `drush cim` does not change one.
 
-Quant Cloud rotates the refresh token every time it is used. Run cron: the
-module refreshes the tokens on cron when fewer than 45 days remain, which
-also keeps the connection from going idle.
+Quant Cloud rotates the refresh token every time it is used. **Cron must
+run.** The module refreshes the tokens on cron when fewer than 45 days
+remain, which also keeps the connection from going idle. Without cron, a
+web request refreshes the token in the last minute before it expires. If
+Quant Cloud is slow, that request can wait about two minutes: the module
+waits for an answer for up to 60 seconds, and after no answer it waits
+15 seconds and asks once more. After such a failure, web requests do not
+try again for 60 seconds; cron still does.
 
 A copy of the production database (for example to staging) carries the
 tokens. If two sites share one refresh token, the second refresh can make

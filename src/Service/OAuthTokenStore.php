@@ -53,6 +53,11 @@ class OAuthTokenStore {
   public const REFUSAL = 'refusal';
 
   /**
+   * Unix time before which web requests do not try a refresh again.
+   */
+  public const RETRY_AFTER = 'retry_after';
+
+  /**
    * Identifiers of conditions that are already logged.
    */
   public const LOGGED = 'logged';
@@ -67,6 +72,7 @@ class OAuthTokenStore {
     self::LIFETIME,
     self::FINGERPRINT,
     self::REFUSAL,
+    self::RETRY_AFTER,
     self::LOGGED,
   ];
 

@@ -117,6 +117,20 @@ class AuthServiceTest extends UnitTestCase {
   protected ?string $refreshAtRelease = NULL;
 
   /**
+   * Seconds that the service paused, in order.
+   *
+   * @var int[]
+   */
+  protected array $pauses = [];
+
+  /**
+   * Queued HTTP answers (Response or Throwable), used before $httpHandler.
+   *
+   * @var array
+   */
+  protected array $httpQueue = [];
+
+  /**
    * Whether the database reports an open transaction.
    */
   protected bool $inTransaction = FALSE;
@@ -285,14 +299,102 @@ class AuthServiceTest extends UnitTestCase {
    */
   public function testUnknownOutcomeKeepsTokensAndReturnsValidToken(): void {
     $this->setExpiresIn(30);
-    $this->httpHandler = function (): Response {
-      throw new ConnectException('cURL error 28: Operation timed out', new Request('POST', 'https://dash.quantgov.cloud/oauth/token'));
-    };
+    $this->httpQueue = [$this->timeout(), $this->timeout()];
 
     $this->assertSame('access-old', $this->service()->getValidAccessToken());
     $this->assertSame('refresh-old', $this->store->get(OAuthTokenStore::REFRESH_TOKEN));
     $this->assertNull($this->store->get(OAuthTokenStore::REFUSAL));
-    $this->assertSame('release', end($this->events));
+    $this->assertSame(['acquire', 'http', 'http', 'release'], $this->events);
+    $this->assertSame([15], $this->pauses);
+  }
+
+  /**
+   * A timeout followed by a 200 recovers the lost rotation.
+   */
+  public function testRecoveryRetryPersistsRecoveredPair(): void {
+    $this->httpQueue = [$this->timeout(), $this->tokenResponse('access-new', 'refresh-new')];
+
+    $this->assertSame('access-new', $this->service()->getValidAccessToken());
+
+    $this->assertSame(['refresh-old', 'refresh-old'], $this->sentRefreshTokens);
+    $this->assertSame([15], $this->pauses);
+    $this->assertSame('refresh-new', $this->refreshAtRelease);
+    $this->assertNull($this->store->get(OAuthTokenStore::RETRY_AFTER));
+  }
+
+  /**
+   * A 5xx and an unreadable 200 are unknown outcomes and get the retry.
+   */
+  public function testServerErrorAndUnreadable200AreRetried(): void {
+    $this->httpQueue = [new Response(503), new Response(200, [], 'not json')];
+
+    $this->assertNull($this->service()->getValidAccessToken());
+
+    $this->assertCount(2, $this->sentRefreshTokens);
+    $this->assertSame('refresh-old', $this->store->get(OAuthTokenStore::REFRESH_TOKEN));
+  }
+
+  /**
+   * A refusal on the retry is recorded as usual.
+   */
+  public function testRefusalOnRetryIsRecorded(): void {
+    $this->httpQueue = [new Response(502), $this->errorResponse('invalid_grant', 'Refresh token not found')];
+
+    $this->service()->getValidAccessToken();
+
+    $this->assertSame('invalid_grant', $this->store->get(OAuthTokenStore::REFUSAL)['error']);
+    $this->assertNull($this->store->get(OAuthTokenStore::RETRY_AFTER));
+  }
+
+  /**
+   * A known non-final error is not retried.
+   */
+  public function testOtherClientErrorIsNotRetried(): void {
+    $this->httpQueue = [$this->errorResponse('invalid_request', 'bad')];
+
+    $this->service()->getValidAccessToken();
+
+    $this->assertCount(1, $this->sentRefreshTokens);
+    $this->assertSame([], $this->pauses);
+  }
+
+  /**
+   * After two unknown outcomes, web requests back off; cron does not.
+   */
+  public function testWebRequestsBackOffAfterUnknownOutcome(): void {
+    $this->setExpiresIn(30);
+    $this->acquireResults = [TRUE, TRUE];
+    $this->httpQueue = [new Response(503), new Response(503)];
+    $service = $this->service();
+
+    $this->assertSame('access-old', $service->getValidAccessToken());
+    $retry_after = (int) $this->store->get(OAuthTokenStore::RETRY_AFTER);
+    $this->assertGreaterThanOrEqual(time() + 59, $retry_after);
+
+    $this->assertSame('access-old', $service->getValidAccessToken());
+    $this->assertCount(2, $this->sentRefreshTokens);
+
+    $this->httpQueue = [$this->tokenResponse('access-new', 'refresh-new')];
+    $service->refreshFromCron();
+    $this->assertCount(3, $this->sentRefreshTokens);
+    $this->assertNull($this->store->get(OAuthTokenStore::RETRY_AFTER));
+  }
+
+  /**
+   * The lock outlives a refresh, the recovery pause and the retry.
+   */
+  public function testLockLifetimeCoversRecovery(): void {
+    $class = new \ReflectionClass(AuthService::class);
+    $needed = 2 * $class->getConstant('REFRESH_HTTP_TIMEOUT') + $class->getConstant('RECOVERY_DELAY');
+
+    $this->assertGreaterThan($needed, $class->getConstant('REFRESH_LOCK_TIMEOUT'));
+  }
+
+  /**
+   * A transport timeout.
+   */
+  protected function timeout(): ConnectException {
+    return new ConnectException('cURL error 28: Operation timed out', new Request('POST', 'https://dash.quantgov.cloud/oauth/token'));
   }
 
   /**
@@ -522,7 +624,7 @@ class AuthServiceTest extends UnitTestCase {
     $database = $this->createMock(Connection::class);
     $database->method('inTransaction')->willReturnCallback(fn() => $this->inTransaction);
 
-    return new AuthService(
+    $service = new TestableAuthService(
       $this->httpClient(),
       $this->configFactory(),
       $this->loggerFactory(),
@@ -533,6 +635,8 @@ class AuthServiceTest extends UnitTestCase {
       new OAuthTokenStore($this->keyValue),
       $database,
     );
+    $service->pauses = &$this->pauses;
+    return $service;
   }
 
   /**
@@ -564,7 +668,14 @@ class AuthServiceTest extends UnitTestCase {
     $client->method('post')->willReturnCallback(function (string $url, array $options): Response {
       $this->events[] = 'http';
       $this->sentRefreshTokens[] = $options['form_params']['refresh_token'];
-      $handler = $this->httpHandler ?? fn() => $this->errorResponse('server_error', 'unexpected');
+      if ($this->httpQueue) {
+        $next = array_shift($this->httpQueue);
+        if ($next instanceof \Throwable) {
+          throw $next;
+        }
+        return $next;
+      }
+      $handler = $this->httpHandler ?? fn() => $this->errorResponse('invalid_request', 'unexpected');
       return $handler();
     });
     return $client;
@@ -668,6 +779,27 @@ class AuthServiceTest extends UnitTestCase {
       $this->refreshAtRelease = $this->store->get(OAuthTokenStore::REFRESH_TOKEN);
     });
     return $lock;
+  }
+
+}
+
+/**
+ * AuthService that records its pauses instead of sleeping.
+ */
+class TestableAuthService extends AuthService {
+
+  /**
+   * Seconds paused, in order.
+   *
+   * @var int[]
+   */
+  public array $pauses = [];
+
+  /**
+   * {@inheritdoc}
+   */
+  protected function pause(int $seconds): void {
+    $this->pauses[] = $seconds;
   }
 
 }

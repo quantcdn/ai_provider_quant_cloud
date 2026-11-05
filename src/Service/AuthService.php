@@ -72,9 +72,28 @@ class AuthService {
   protected const REFRESH_LOCK_ID = 'ai_provider_quant_cloud.oauth_refresh';
 
   /**
-   * Lock lifetime. It must be longer than the refresh HTTP timeout.
+   * Lock lifetime.
+   *
+   * It must cover a refresh, the recovery pause and one retry:
+   * 60 + 15 + 60 = 135 seconds.
    */
-  protected const REFRESH_LOCK_TIMEOUT = 90;
+  protected const REFRESH_LOCK_TIMEOUT = 150;
+
+  /**
+   * Seconds to wait before the one retry after an unknown outcome.
+   *
+   * The portal re-issues a lost rotation once, for the previous refresh
+   * token, within five minutes.
+   */
+  protected const RECOVERY_DELAY = 15;
+
+  /**
+   * Seconds in which web requests do not refresh after an unknown outcome.
+   *
+   * Cron still tries. This keeps every request from waiting on a slow
+   * portal.
+   */
+  protected const REQUEST_BACKOFF = 60;
 
   /**
    * Maximum seconds to wait for a peer that holds the refresh lock.
@@ -449,7 +468,7 @@ class AuthService {
     $has_refresh = !empty($token_data['refresh_token']);
 
     $this->tokenStore->saveTokens($token_data);
-    $stale = [OAuthTokenStore::REFUSAL, OAuthTokenStore::LOGGED];
+    $stale = [OAuthTokenStore::REFUSAL, OAuthTokenStore::RETRY_AFTER, OAuthTokenStore::LOGGED];
     if (!$has_refresh) {
       // A refresh token from an earlier connection belongs to another chain.
       $stale[] = OAuthTokenStore::REFRESH_TOKEN;
@@ -606,7 +625,9 @@ class AuthService {
    *
    * @return array{tokens: ?array, outcome: string, error: string, description: string}
    *   'outcome' is 'ok', 'rotated' (a peer rotated the token moments ago),
-   *   'refused' (final: invalid_grant or invalid_client) or 'unknown'.
+   *   'refused' (final: invalid_grant or invalid_client), 'unknown' (no
+   *   answer, a 5xx, or a 200 without tokens: the portal may have rotated)
+   *   or 'failed' (any other error).
    */
   protected function requestRefresh(string $refresh_token): array {
     try {
@@ -650,7 +671,7 @@ class AuthService {
     // The error fields are fixed portal strings, not secrets.
     $error = (string) ($data['error'] ?? '');
     $description = mb_substr((string) ($data['error_description'] ?? ''), 0, 200);
-    $outcome = $this->classifyRefreshError($error, $description);
+    $outcome = $this->classifyRefreshError($status, $error, $description);
     if ($outcome !== 'refused') {
       $this->logger->log($outcome === 'rotated' ? LogLevel::NOTICE : LogLevel::ERROR, 'OAuth token refresh rejected with status @status (@error: @description). The stored tokens are kept.', [
         '@status' => $status,
@@ -662,13 +683,16 @@ class AuthService {
   }
 
   /**
-   * Classify a refresh error as 'rotated', 'refused' or 'unknown'.
+   * Classify a refresh error as 'rotated', 'refused', 'unknown' or 'failed'.
    */
-  protected function classifyRefreshError(string $error, string $description): string {
+  protected function classifyRefreshError(int $status, string $error, string $description): string {
     if ($error === 'invalid_grant' && stripos($description, 'just rotated') !== FALSE) {
       return 'rotated';
     }
-    return in_array($error, ['invalid_grant', 'invalid_client'], TRUE) ? 'refused' : 'unknown';
+    if (in_array($error, ['invalid_grant', 'invalid_client'], TRUE)) {
+      return 'refused';
+    }
+    return $status >= 500 || $status === 200 ? 'unknown' : 'failed';
   }
 
   /**
@@ -696,14 +720,26 @@ class AuthService {
       return $access ?: NULL;
     }
 
-    if ($this->database->inTransaction() && !$this->isExpiring($record, 0)) {
-      // A rollback of the open transaction would also roll back the saved
-      // rotation and lose the new refresh token. Use the token while it
-      // works, and refresh outside the transaction.
-      return $access;
+    if ($this->shouldDeferRequestRefresh($record)) {
+      return $this->getUsableAccessToken($record);
     }
 
     return $this->refreshIfAllowed($record, self::EXPIRY_MARGIN);
+  }
+
+  /**
+   * Whether a web request must not refresh now.
+   *
+   * After an unknown outcome, web requests wait REQUEST_BACKOFF seconds;
+   * cron does not. In an open database transaction, a rollback would also
+   * roll back the saved rotation and lose the new refresh token, so the
+   * token is used while it works and refreshed outside the transaction.
+   */
+  protected function shouldDeferRequestRefresh(array $record): bool {
+    if ((int) ($record[OAuthTokenStore::RETRY_AFTER] ?? 0) > time()) {
+      return TRUE;
+    }
+    return $this->database->inTransaction() && !$this->isExpiring($record, 0);
   }
 
   /**
@@ -844,7 +880,7 @@ class AuthService {
       return $this->getUsableAccessToken($record);
     }
 
-    $result = $this->requestRefresh($refresh);
+    $result = $this->requestRefreshWithRecovery($refresh);
     if ($result['tokens']) {
       return $this->saveRotatedTokens($result['tokens']);
     }
@@ -858,6 +894,34 @@ class AuthService {
   }
 
   /**
+   * Send the refresh grant; after an unknown outcome, retry it once.
+   *
+   * The portal can commit a rotation whose answer never arrives. Within
+   * five minutes, it answers the same (previous) refresh token once more
+   * with a new pair. The caller holds the lock for the whole sequence.
+   */
+  protected function requestRefreshWithRecovery(string $refresh_token): array {
+    $result = $this->requestRefresh($refresh_token);
+    if ($result['outcome'] !== 'unknown') {
+      return $result;
+    }
+
+    $this->pause(self::RECOVERY_DELAY);
+    $result = $this->requestRefresh($refresh_token);
+    if ($result['outcome'] === 'unknown') {
+      $this->tokenStore->set(OAuthTokenStore::RETRY_AFTER, time() + self::REQUEST_BACKOFF);
+    }
+    return $result;
+  }
+
+  /**
+   * Wait before the recovery retry.
+   */
+  protected function pause(int $seconds): void {
+    sleep($seconds);
+  }
+
+  /**
    * Save a rotated token pair and return the new access token.
    *
    * Only the token store is written: no config, no Key entity.
@@ -865,7 +929,7 @@ class AuthService {
   protected function saveRotatedTokens(array $token_data): string {
     try {
       $this->tokenStore->saveTokens($token_data);
-      $this->tokenStore->delete([OAuthTokenStore::LOGGED]);
+      $this->tokenStore->delete([OAuthTokenStore::LOGGED, OAuthTokenStore::RETRY_AFTER]);
       if (!$this->tokenStore->get(OAuthTokenStore::FINGERPRINT)) {
         $this->tokenStore->set(OAuthTokenStore::FINGERPRINT, $this->getSiteFingerprint());
       }
