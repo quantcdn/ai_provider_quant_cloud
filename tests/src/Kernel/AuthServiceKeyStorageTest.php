@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\ai_provider_quant_cloud\Kernel;
 
+use Drupal\Core\Form\FormState;
+use Drupal\Core\Session\AccountInterface;
 use Drupal\KernelTests\KernelTestBase;
+use Drupal\ai_provider_quant_cloud\Form\KeepConnectionForm;
 use Drupal\ai_provider_quant_cloud\Service\AuthService;
 use Drupal\ai_provider_quant_cloud\Service\OAuthTokenStore;
 use Drupal\key\Entity\Key;
@@ -26,7 +29,7 @@ class AuthServiceKeyStorageTest extends KernelTestBase {
   /**
    * {@inheritdoc}
    */
-  protected static $modules = ['system', 'key', 'ai', 'ai_provider_quant_cloud'];
+  protected static $modules = ['system', 'user', 'key', 'ai', 'ai_provider_quant_cloud'];
 
   /**
    * Requests sent through the mock HTTP client.
@@ -41,6 +44,7 @@ class AuthServiceKeyStorageTest extends KernelTestBase {
   protected function setUp(): void {
     parent::setUp();
     $this->installConfig(['system']);
+    $this->installEntitySchema('user');
     $this->container->get('module_handler')->loadInclude('ai_provider_quant_cloud', 'install');
   }
 
@@ -204,22 +208,108 @@ class AuthServiceKeyStorageTest extends KernelTestBase {
   }
 
   /**
-   * The update moves a 1.x token pair, keeps its expiry and stamps the site.
+   * The update moves a 1.x token pair in place and does not stamp the site.
    */
-  public function testUpdateMovesRefreshTokenAndStampsFingerprint(): void {
+  public function testUpdateMovesRefreshTokenInPlaceWithoutFingerprint(): void {
     $this->createConfigKey(AuthService::ACCESS_KEY_ID, 'access-x');
     $this->createConfigKey(AuthService::REFRESH_KEY_ID, 'refresh-x');
+    $uuid = Key::load(AuthService::REFRESH_KEY_ID)->uuid();
     $this->setAuthSettings('oauth', AuthService::ACCESS_KEY_ID);
     $expires_at = time() + 86400;
     $this->container->get('state')->set(AuthService::LEGACY_EXPIRES_AT_STATE, $expires_at);
+    $this->container->get('state')->set(AuthService::LEGACY_FINGERPRINT_STATE, 'old-formula');
 
     ai_provider_quant_cloud_update_10004();
 
     $store = $this->container->get('ai_provider_quant_cloud.token_store');
     $this->assertSame('refresh-x', $store->get(OAuthTokenStore::REFRESH_TOKEN));
     $this->assertSame($expires_at, $store->get(OAuthTokenStore::EXPIRES_AT));
-    $this->assertSame($this->service()->getSiteFingerprint(), $store->get(OAuthTokenStore::FINGERPRINT));
-    $this->assertSame('refresh-x', Key::load(AuthService::REFRESH_KEY_ID)->getKeyValue(TRUE));
+    $this->assertNull($store->get(OAuthTokenStore::FINGERPRINT));
+    $this->assertNull($this->container->get('state')->get(AuthService::LEGACY_FINGERPRINT_STATE));
+    $key = Key::load(AuthService::REFRESH_KEY_ID);
+    $this->assertSame($uuid, $key->uuid());
+    $this->assertSame(AuthService::KEY_PROVIDER_ID, $key->getKeyProvider()->getPluginId());
+    $this->assertSame('refresh-x', $key->getKeyValue(TRUE));
+    $this->assertNull($this->service()->getReconnectReason());
+    $this->assertSame([], $this->service()->getUnconvertedKeyIds());
+  }
+
+  /**
+   * Between the code deploy and the update, the old Key's token works.
+   */
+  public function testTokenFromOldKeyBeforeUpdate(): void {
+    $this->createConfigKey(AuthService::ACCESS_KEY_ID, 'pre-update-access');
+    $this->createConfigKey(AuthService::REFRESH_KEY_ID, 'pre-update-refresh');
+    $this->setAuthSettings('oauth', AuthService::ACCESS_KEY_ID);
+
+    $service = $this->service([$this->tokenResponse('access-2', 'refresh-2')]);
+    $this->assertSame('pre-update-access', $service->getValidAccessToken());
+    $service->refreshFromCron();
+    $this->assertSame([], $this->history);
+
+    $requirements = $this->container->get('module_handler')->invokeAll('runtime_requirements');
+    $this->assertArrayHasKey('ai_provider_quant_cloud_oauth_keys', $requirements);
+  }
+
+  /**
+   * Saving an old Key export keeps the pointer and keeps the token out.
+   */
+  public function testSavingOldKeyExportKeepsPointer(): void {
+    $this->service()->persistTokens(['access_token' => 'access-1', 'refresh_token' => 'refresh-1', 'expires_in' => 3600]);
+
+    foreach ([FALSE, TRUE] as $syncing) {
+      $key = Key::load(AuthService::ACCESS_KEY_ID);
+      $key->setSyncing($syncing);
+      $key->set('key_provider', 'config');
+      $key->set('key_provider_settings', ['key_value' => 'stale-access']);
+      $key->set('key_input', 'text_field');
+      $key->save();
+
+      $raw = $this->rawConfig('key.key.' . AuthService::ACCESS_KEY_ID);
+      $this->assertStringNotContainsString('stale-access', $raw);
+      $this->assertStringContainsString(AuthService::KEY_PROVIDER_ID, $raw);
+    }
+    $this->assertSame('access-1', $this->service()->getValidAccessToken());
+  }
+
+  /**
+   * Deleting an old Key before the update keeps its token.
+   */
+  public function testDeletingOldKeyBeforeUpdateKeepsToken(): void {
+    $this->createConfigKey(AuthService::ACCESS_KEY_ID, 'pre-update-access');
+    $this->setAuthSettings('oauth', AuthService::ACCESS_KEY_ID);
+
+    Key::load(AuthService::ACCESS_KEY_ID)->delete();
+
+    $this->assertSame('pre-update-access', $this->container->get('ai_provider_quant_cloud.token_store')->get(OAuthTokenStore::ACCESS_TOKEN));
+    $this->assertSame('pre-update-access', $this->service()->getValidAccessToken());
+  }
+
+  /**
+   * The keep-connection form needs the restricted permission and stamps.
+   */
+  public function testKeepConnectionFormNeedsRestrictedPermission(): void {
+    $this->container->get('router.builder')->rebuild();
+    $permissions = $this->container->get('user.permissions')->getPermissions();
+    $this->assertTrue($permissions['confirm quant cloud same site']['restrict access']);
+
+    $admin = $this->createMock(AccountInterface::class);
+    $admin->method('hasPermission')->willReturnCallback(fn($p) => $p === 'administer site configuration');
+    $confirmer = $this->createMock(AccountInterface::class);
+    $confirmer->method('hasPermission')->willReturnCallback(fn($p) => $p === 'confirm quant cloud same site');
+    $access = $this->container->get('access_manager');
+    $this->assertFalse($access->checkNamedRoute('ai_provider_quant_cloud.keep_connection', [], $admin));
+    $this->assertTrue($access->checkNamedRoute('ai_provider_quant_cloud.keep_connection', [], $confirmer));
+
+    $this->service()->persistTokens(['access_token' => 'access-1', 'refresh_token' => 'refresh-1', 'expires_in' => 3600]);
+    $this->setSetting('hash_salt', 'a-different-environment');
+    $this->assertSame(AuthService::RECONNECT_OTHER_SITE, $this->service()->getReconnectReason());
+
+    $form_state = new FormState();
+    $form_state->setValues(['confirm' => 1]);
+    $this->container->get('form_builder')->submitForm(KeepConnectionForm::class, $form_state);
+
+    $this->assertSame([], $form_state->getErrors());
     $this->assertNull($this->service()->getReconnectReason());
   }
 

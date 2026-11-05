@@ -131,6 +131,16 @@ class AuthServiceTest extends UnitTestCase {
   protected array $httpQueue = [];
 
   /**
+   * Whether the module access Key still holds a value in config.
+   */
+  protected bool $unmigratedAccessKey = FALSE;
+
+  /**
+   * Whether the service runs as CLI (cron, drush) or as a web request.
+   */
+  protected bool $cli = TRUE;
+
+  /**
    * Whether the database reports an open transaction.
    */
   protected bool $inTransaction = FALSE;
@@ -304,7 +314,7 @@ class AuthServiceTest extends UnitTestCase {
     $this->assertSame('access-old', $this->service()->getValidAccessToken());
     $this->assertSame('refresh-old', $this->store->get(OAuthTokenStore::REFRESH_TOKEN));
     $this->assertNull($this->store->get(OAuthTokenStore::REFUSAL));
-    $this->assertSame(['acquire', 'http', 'http', 'release'], $this->events);
+    $this->assertSame(['acquire', 'keepRunning', 'http', 'http', 'release'], $this->events);
     $this->assertSame([15], $this->pauses);
   }
 
@@ -359,25 +369,89 @@ class AuthServiceTest extends UnitTestCase {
   }
 
   /**
-   * After two unknown outcomes, web requests back off; cron does not.
+   * After two unknown outcomes, web requests and cron back off.
    */
-  public function testWebRequestsBackOffAfterUnknownOutcome(): void {
+  public function testBackOffAfterTwoUnknownOutcomes(): void {
     $this->setExpiresIn(30);
     $this->acquireResults = [TRUE, TRUE];
     $this->httpQueue = [new Response(503), new Response(503)];
     $service = $this->service();
 
     $this->assertSame('access-old', $service->getValidAccessToken());
-    $retry_after = (int) $this->store->get(OAuthTokenStore::RETRY_AFTER);
-    $this->assertGreaterThanOrEqual(time() + 59, $retry_after);
+    $this->assertGreaterThanOrEqual(time() + 59, (int) $this->store->get(OAuthTokenStore::RETRY_AFTER));
+    $this->assertGreaterThanOrEqual(time() + 599, (int) $this->store->get(OAuthTokenStore::CRON_RETRY_AFTER));
 
     $this->assertSame('access-old', $service->getValidAccessToken());
+    $service->refreshFromCron();
     $this->assertCount(2, $this->sentRefreshTokens);
 
+    // After the cron backoff, cron tries again; web requests may still wait.
+    $this->store->set(OAuthTokenStore::CRON_RETRY_AFTER, time() - 1);
     $this->httpQueue = [$this->tokenResponse('access-new', 'refresh-new')];
     $service->refreshFromCron();
     $this->assertCount(3, $this->sentRefreshTokens);
     $this->assertNull($this->store->get(OAuthTokenStore::RETRY_AFTER));
+    $this->assertNull($this->store->get(OAuthTokenStore::PENDING));
+  }
+
+  /**
+   * A web request does not sleep or retry; it leaves a pending marker.
+   */
+  public function testWebUnknownOutcomeLeavesPendingMarker(): void {
+    $this->cli = FALSE;
+    $this->setExpiresIn(30);
+    $this->httpQueue = [$this->timeout()];
+
+    $this->assertSame('access-old', $this->service()->getValidAccessToken());
+
+    $this->assertCount(1, $this->sentRefreshTokens);
+    $this->assertSame([], $this->pauses);
+    $pending = $this->store->get(OAuthTokenStore::PENDING);
+    $this->assertSame(hash('sha256', 'refresh-old'), $pending['token']);
+    $this->assertSame(1, $pending['attempts']);
+    $this->assertSame(['acquire', 'keepRunning', 'http', 'release'], $this->events);
+  }
+
+  /**
+   * The next process retries a recent pending refresh at once.
+   *
+   * It ignores the backoff and the expiry, and it recovers the pair.
+   */
+  public function testNextProcessRecoversPendingRefresh(): void {
+    $this->cli = FALSE;
+    $this->setExpiresIn(30);
+    $this->acquireResults = [TRUE, TRUE];
+    $this->httpQueue = [$this->timeout(), $this->tokenResponse('access-new', 'refresh-new')];
+
+    $this->service()->getValidAccessToken();
+    $this->assertSame('access-new', $this->service()->getValidAccessToken());
+
+    $this->assertSame(['refresh-old', 'refresh-old'], $this->sentRefreshTokens);
+    $this->assertNull($this->store->get(OAuthTokenStore::PENDING));
+  }
+
+  /**
+   * A marker left by a dead process is retried even before expiry.
+   */
+  public function testPendingMarkerFromDeadProcessIsRetried(): void {
+    $this->setExpiresIn(3600);
+    $this->setPending(time() - 60, 'refresh-old');
+    $this->httpQueue = [$this->tokenResponse('access-new', 'refresh-new')];
+
+    $this->assertSame('access-new', $this->service()->getValidAccessToken());
+  }
+
+  /**
+   * An old marker, or one for another token, is not retried.
+   */
+  public function testStalePendingMarkerIsIgnored(): void {
+    $this->setExpiresIn(3600);
+    $this->setPending(time() - 300, 'refresh-old');
+    $this->assertSame('access-old', $this->service()->getValidAccessToken());
+
+    $this->setPending(time(), 'other');
+    $this->assertSame('access-old', $this->service()->getValidAccessToken());
+    $this->assertSame([], $this->sentRefreshTokens);
   }
 
   /**
@@ -388,6 +462,17 @@ class AuthServiceTest extends UnitTestCase {
     $needed = 2 * $class->getConstant('REFRESH_HTTP_TIMEOUT') + $class->getConstant('RECOVERY_DELAY');
 
     $this->assertGreaterThan($needed, $class->getConstant('REFRESH_LOCK_TIMEOUT'));
+  }
+
+  /**
+   * Store a pending marker for one unanswered send of a refresh token.
+   */
+  protected function setPending(int $since, string $refresh_token): void {
+    $this->store->set(OAuthTokenStore::PENDING, [
+      'since' => $since,
+      'token' => hash('sha256', $refresh_token),
+      'attempts' => 1,
+    ]);
   }
 
   /**
@@ -408,7 +493,7 @@ class AuthServiceTest extends UnitTestCase {
     $this->assertSame('access-new', $this->service()->getValidAccessToken());
     $this->assertSame('refresh-new', $this->store->get(OAuthTokenStore::REFRESH_TOKEN));
     $this->assertSame('access-new', $this->store->get(OAuthTokenStore::ACCESS_TOKEN));
-    $this->assertSame(['acquire', 'http', 'release'], $this->events);
+    $this->assertSame(['acquire', 'keepRunning', 'http', 'release'], $this->events);
     $this->assertSame('refresh-new', $this->refreshAtRelease);
   }
 
@@ -446,13 +531,15 @@ class AuthServiceTest extends UnitTestCase {
   }
 
   /**
-   * In an open transaction, an expired token is still refreshed.
+   * In an open transaction, even an expired token is not refreshed.
    */
-  public function testRefreshInsideTransactionWhenTokenExpired(): void {
+  public function testNoRefreshInsideTransactionWhenTokenExpired(): void {
     $this->inTransaction = TRUE;
     $this->httpHandler = fn() => $this->tokenResponse('access-new', 'refresh-new');
 
-    $this->assertSame('access-new', $this->service()->getValidAccessToken());
+    $this->assertNull($this->service()->getValidAccessToken());
+    $this->service()->refreshFromCron();
+    $this->assertSame([], $this->sentRefreshTokens);
   }
 
   /**
@@ -523,7 +610,7 @@ class AuthServiceTest extends UnitTestCase {
    * Keeping the connection re-stamps the fingerprint, and refresh resumes.
    */
   public function testConfirmSameSiteResumesRefresh(): void {
-    $this->store->set(OAuthTokenStore::FINGERPRINT, 'another-site');
+    $this->store->set(OAuthTokenStore::FINGERPRINT, ['uuid' => 'another-site']);
     $this->httpHandler = fn() => $this->tokenResponse('access-new', 'refresh-new');
     $service = $this->service();
     $this->assertSame(AuthService::RECONNECT_OTHER_SITE, $service->getReconnectReason());
@@ -569,7 +656,7 @@ class AuthServiceTest extends UnitTestCase {
   /**
    * The fingerprint with the given default database connection info.
    */
-  protected function fingerprintWithDatabase(array $info): string {
+  protected function fingerprintWithDatabase(array $info): array {
     Database::removeConnection('default');
     Database::addConnectionInfo('default', 'default', $info + ['driver' => 'mysql', 'prefix' => '']);
     return $this->service()->getSiteFingerprint();
@@ -597,6 +684,53 @@ class AuthServiceTest extends UnitTestCase {
 
     $this->settings['auth.access_token_key'] = 'my_manual_key';
     $this->assertNull($this->service()->getReconnectReason());
+  }
+
+  /**
+   * The mismatch names the component that differs, without its value.
+   */
+  public function testFingerprintDifferencesNameTheComponent(): void {
+    $this->store->set(OAuthTokenStore::FINGERPRINT, $this->service()->getSiteFingerprint());
+    new Settings(['hash_salt' => 'salt-staging']);
+
+    $differences = $this->service()->getFingerprintDifferences();
+
+    $this->assertSame(["\$settings['hash_salt']"], $differences);
+    $this->assertStringNotContainsString('salt-staging', implode(' ', $differences));
+  }
+
+  /**
+   * Hosting environment variables are part of the fingerprint.
+   */
+  public function testHostingEnvironmentVariableChangesFingerprint(): void {
+    try {
+      putenv('PLATFORM_ENVIRONMENT=main');
+      $production = $this->service()->getSiteFingerprint();
+      $this->store->set(OAuthTokenStore::FINGERPRINT, $production);
+      putenv('PLATFORM_ENVIRONMENT=pr-12');
+      $preview = $this->service()->getSiteFingerprint();
+      $differences = $this->service()->getFingerprintDifferences();
+    }
+    finally {
+      putenv('PLATFORM_ENVIRONMENT');
+    }
+
+    $this->assertNotSame($production, $preview);
+    $this->assertSame(['environment variable PLATFORM_ENVIRONMENT'], $differences);
+  }
+
+  /**
+   * Before update 10004 runs, the token is read from the old Key.
+   */
+  public function testUnmigratedKeyTokenIsUsedWithoutRefresh(): void {
+    $this->store->clear();
+    $this->unmigratedAccessKey = TRUE;
+    $this->httpHandler = fn() => $this->tokenResponse('access-new', 'refresh-new');
+
+    $this->assertSame('legacy-key-access', $this->service()->getValidAccessToken());
+    $this->assertSame('legacy-key-access', $this->service()->getAccessToken());
+    $this->service()->refreshFromCron();
+    $this->assertSame([], $this->sentRefreshTokens);
   }
 
   /**
@@ -636,6 +770,8 @@ class AuthServiceTest extends UnitTestCase {
       $database,
     );
     $service->pauses = &$this->pauses;
+    $service->events = &$this->events;
+    $service->cli = $this->cli;
     return $service;
   }
 
@@ -729,10 +865,19 @@ class AuthServiceTest extends UnitTestCase {
     $manual = $this->createMock('Drupal\key\KeyInterface');
     $manual->method('getKeyValue')->willReturn('manual-value');
 
+    $provider = $this->createMock('Drupal\key\Plugin\KeyProviderBase');
+    $provider->method('getPluginId')->willReturn('config');
+    $unmigrated = $this->createMock('Drupal\key\KeyInterface');
+    $unmigrated->method('getKeyProvider')->willReturn($provider);
+    $unmigrated->method('getKeyValue')->willReturn('legacy-key-access');
+
     $repository = $this->createMock(KeyRepositoryInterface::class);
-    $repository->method('getKey')->willReturnCallback(
-      static fn(string $id) => $id === 'my_manual_key' ? $manual : NULL,
-    );
+    $repository->method('getKey')->willReturnCallback(function (string $id) use ($manual, $unmigrated) {
+      if ($id === 'my_manual_key') {
+        return $manual;
+      }
+      return $id === AuthService::ACCESS_KEY_ID && $this->unmigratedAccessKey ? $unmigrated : NULL;
+    });
     return $repository;
   }
 
@@ -796,10 +941,36 @@ class TestableAuthService extends AuthService {
   public array $pauses = [];
 
   /**
+   * The test's event list.
+   *
+   * @var string[]
+   */
+  public array $events = [];
+
+  /**
+   * Whether to report a CLI process.
+   */
+  public bool $cli = TRUE;
+
+  /**
    * {@inheritdoc}
    */
   protected function pause(int $seconds): void {
     $this->pauses[] = $seconds;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  protected function keepRunning(): void {
+    $this->events[] = 'keepRunning';
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  protected function isCli(): bool {
+    return $this->cli;
   }
 
 }

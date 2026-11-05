@@ -38,3 +38,13 @@ ai_provider_quant_cloud.oauth_disconnect:
     _csrf_token: 'TRUE'
   options:
     _admin_route: TRUE
+
+ai_provider_quant_cloud.keep_connection:
+  path: '/admin/config/ai/quant-cloud/oauth/keep-connection'
+  defaults:
+    _form: '\Drupal\ai_provider_quant_cloud\Form\KeepConnectionForm'
+    _title: 'Keep the Quant Cloud connection'
+  requirements:
+    _permission: 'confirm quant cloud same site'
+  options:
+    _admin_route: TRUE

@@ -58,6 +58,23 @@ class OAuthTokenStore {
   public const RETRY_AFTER = 'retry_after';
 
   /**
+   * Unix time before which cron does not try a refresh again.
+   */
+  public const CRON_RETRY_AFTER = 'cron_retry_after';
+
+  /**
+   * A refresh whose outcome is not known yet.
+   *
+   * ['since' => Unix time, 'token' => SHA-256 of the refresh token,
+   * 'attempts' => number of sends of that token].
+   *
+   * It is written before the refresh request and removed on a definite
+   * result. A process that finds a recent one sends the same refresh token
+   * again, so that the portal re-issues a lost rotation.
+   */
+  public const PENDING = 'pending';
+
+  /**
    * Identifiers of conditions that are already logged.
    */
   public const LOGGED = 'logged';
@@ -73,6 +90,8 @@ class OAuthTokenStore {
     self::FINGERPRINT,
     self::REFUSAL,
     self::RETRY_AFTER,
+    self::CRON_RETRY_AFTER,
+    self::PENDING,
     self::LOGGED,
   ];
 
@@ -110,6 +129,16 @@ class OAuthTokenStore {
    */
   public function set(string $name, mixed $value): void {
     $this->store->set($name, $value);
+  }
+
+  /**
+   * Write several values.
+   *
+   * @param array<string,mixed> $values
+   *   Values keyed by the constants of this class.
+   */
+  public function setMany(array $values): void {
+    $this->store->setMultiple($values);
   }
 
   /**

@@ -466,25 +466,15 @@ class QuantCloudConfigForm extends ConfigFormBase {
         '#url' => Url::fromRoute('ai_provider_quant_cloud.oauth_connect'),
       ],
     ];
-    if ($this->authService->getReconnectReason() === AuthService::RECONNECT_OTHER_SITE) {
+    $keep_url = Url::fromRoute('ai_provider_quant_cloud.keep_connection');
+    if ($this->authService->getReconnectReason() === AuthService::RECONNECT_OTHER_SITE && $keep_url->access()) {
       $form['auth_section']['reconnect_warning']['keep_connection'] = [
-        '#type' => 'submit',
-        '#value' => $this->t('This is the same site — keep the connection'),
-        '#submit' => ['::keepConnection'],
-        '#limit_validation_errors' => [],
+        '#type' => 'link',
+        '#title' => $this->t('This is the same site — keep the connection'),
+        '#url' => $keep_url,
+        '#prefix' => ' ',
       ];
     }
-  }
-
-  /**
-   * Accept the stored OAuth tokens as this site's own.
-   *
-   * The form route requires 'administer site configuration', and the Form
-   * API token protects the submission against CSRF.
-   */
-  public function keepConnection(array &$form, FormStateInterface $form_state): void {
-    $this->authService->confirmSameSite();
-    $this->messenger()->addStatus($this->t('The Quant Cloud connection is kept for this site.'));
   }
 
   /**

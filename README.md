@@ -101,38 +101,51 @@ Configure additional options in the "Advanced Settings" section:
 When you connect with OAuth, the module stores the access and refresh
 tokens in the key_value store (collection `ai_provider_quant_cloud.oauth`),
 not in configuration. The Key entities `quant_cloud_oauth_access_token` and
-`quant_cloud_oauth_refresh_token` only point at that store, so
-`drush cex` exports no token and `drush cim` does not change one.
+`quant_cloud_oauth_refresh_token` only point at that store, so `drush cex`
+exports no token.
+
+If you import an older export in which these Keys still hold a token, the
+module changes them back to pointers when they are saved, so no token enters
+active configuration. If the import runs before `drush updb`, the module
+first copies the token into the store. After you update from 1.0.0, run
+`drush updb` and then `drush cex`, so that the old token leaves your config
+sync directory. The status report warns while a Key still holds a token.
 
 Quant Cloud rotates the refresh token every time it is used. **Cron must
 run.** The module refreshes the tokens on cron when fewer than 45 days
 remain, which also keeps the connection from going idle. Without cron, a
-web request refreshes the token in the last minute before it expires. If
-Quant Cloud is slow, that request can wait about two minutes: the module
-waits for an answer for up to 60 seconds, and after no answer it waits
-15 seconds and asks once more. After such a failure, web requests do not
-try again for 60 seconds; cron still does.
+web request refreshes the token in the last minute before it expires; it
+waits up to 60 seconds for Quant Cloud. If no answer arrives, the next
+process retries at once, and other web requests do not try again for 60
+seconds. Cron and drush wait 15 seconds and retry in the same process;
+after a failure, cron backs off for 10 minutes. A refresh never runs
+inside an open database transaction.
 
 A copy of the production database (for example to staging) carries the
 tokens. If two sites share one refresh token, the second refresh can make
 Quant Cloud revoke the connection for both. To prevent this, the module
-stores a fingerprint of the site with the tokens: a hash of
-`$settings['hash_salt']`, the database name, the table prefix and the site
-UUID. A site whose fingerprint does not match keeps using the access token
-until it expires, but does not refresh it. The status report and the
-settings form then ask you to reconnect that site, or to confirm with
-"This is the same site — keep the connection".
+stores a fingerprint of the site with the tokens on connect and on each
+refresh. It covers `$settings['hash_salt']`, the database name, the table
+prefix, the site UUID, and these hosting variables when they are set:
+`PLATFORM_ENVIRONMENT`, `LAGOON_ENVIRONMENT`, `PANTHEON_ENVIRONMENT` and
+`AH_SITE_ENVIRONMENT`. A site whose fingerprint does not match keeps using
+the access token until it expires, but does not refresh it. The status
+report and the settings form name the component that differs and ask you to
+reconnect that site. A user with the restricted permission "Confirm that
+this is the original Quant Cloud site" can instead confirm with "This is
+the same site — keep the connection". Only confirm on the original site: a
+copy that confirms logs the original site out of Quant Cloud.
 
-If your environments share `hash_salt` and the database name (for example
-on Platform.sh or Lagoon, where every environment can have the same
-database name), set a different value in each environment's settings.php:
+If your environments share all of these values, set a different value in
+each environment's settings.php:
 
 ```php
-$settings['ai_provider_quant_cloud_site_id'] = getenv('ENVIRONMENT_NAME');
+$settings['ai_provider_quant_cloud_site_id'] = getenv('MY_ENVIRONMENT_NAME');
 ```
 
 Use a value that is the same for web requests, drush and cron in one
-environment.
+environment. The setting replaces the automatic components (not the site
+UUID).
 
 ## Usage
 
