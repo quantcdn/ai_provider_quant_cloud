@@ -96,6 +96,39 @@ Configure additional options in the "Advanced Settings" section:
   - Max tokens (1 - 65536)
   - Top P sampling
 
+### 5. OAuth tokens, cron and copies of the database
+
+When you connect with OAuth, the module stores the access and refresh
+tokens in the key_value store (collection `ai_provider_quant_cloud.oauth`),
+not in configuration. The Key entities `quant_cloud_oauth_access_token` and
+`quant_cloud_oauth_refresh_token` only point at that store, so
+`drush cex` exports no token and `drush cim` does not change one.
+
+Quant Cloud rotates the refresh token every time it is used. Run cron: the
+module refreshes the tokens on cron when fewer than 45 days remain, which
+also keeps the connection from going idle.
+
+A copy of the production database (for example to staging) carries the
+tokens. If two sites share one refresh token, the second refresh can make
+Quant Cloud revoke the connection for both. To prevent this, the module
+stores a fingerprint of the site with the tokens: a hash of
+`$settings['hash_salt']`, the database name, the table prefix and the site
+UUID. A site whose fingerprint does not match keeps using the access token
+until it expires, but does not refresh it. The status report and the
+settings form then ask you to reconnect that site, or to confirm with
+"This is the same site — keep the connection".
+
+If your environments share `hash_salt` and the database name (for example
+on Platform.sh or Lagoon, where every environment can have the same
+database name), set a different value in each environment's settings.php:
+
+```php
+$settings['ai_provider_quant_cloud_site_id'] = getenv('ENVIRONMENT_NAME');
+```
+
+Use a value that is the same for web requests, drush and cron in one
+environment.
+
 ## Usage
 
 ### Basic Chat Example

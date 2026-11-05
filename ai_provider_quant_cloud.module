@@ -49,3 +49,13 @@ function ai_provider_quant_cloud_help($route_name, RouteMatchInterface $route_ma
       return $output;
   }
 }
+
+/**
+ * Implements hook_cron().
+ *
+ * Refreshes the OAuth tokens long before they expire, so that requests
+ * rarely refresh (for example inside a database transaction).
+ */
+function ai_provider_quant_cloud_cron() {
+  \Drupal::service('ai_provider_quant_cloud.auth')->refreshFromCron();
+}

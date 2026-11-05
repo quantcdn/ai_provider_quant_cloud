@@ -7,41 +7,20 @@ declare(strict_types=1);
  * Install and update hooks for the Quant Cloud AI Provider module.
  */
 
-use Drupal\Core\Extension\Requirement\RequirementSeverity;
-use Drupal\Core\Url;
-use Drupal\ai_provider_quant_cloud\Service\AuthService;
+use Drupal\Core\Hook\Attribute\LegacyRequirementsHook;
+use Drupal\ai_provider_quant_cloud\Hook\RuntimeRequirementsHook;
 
 /**
  * Implements hook_requirements().
+ *
+ * From drupal:11.3, RuntimeRequirementsHook reports this instead.
  */
+#[LegacyRequirementsHook]
 function ai_provider_quant_cloud_requirements($phase): array {
   if ($phase !== 'runtime') {
     return [];
   }
-  $reason = \Drupal::service('ai_provider_quant_cloud.auth')->getReconnectReason();
-  if ($reason === NULL) {
-    return [];
-  }
-
-  $is_error = $reason === AuthService::RECONNECT_OTHER_SITE;
-  // RequirementSeverity exists from drupal:11.2; drupal:12 requires it.
-  $has_enum = class_exists(RequirementSeverity::class);
-  $severity = $is_error ? 2 : 1;
-  if ($has_enum) {
-    $severity = $is_error ? RequirementSeverity::Error : RequirementSeverity::Warning;
-  }
-
-  return [
-    'ai_provider_quant_cloud_oauth' => [
-      'title' => t('Quant Cloud AI Provider'),
-      'value' => t('Reconnect required'),
-      'description' => t('@message <a href=":url">Reconnect to Quant Cloud</a>.', [
-        '@message' => AuthService::reconnectMessage($reason),
-        ':url' => Url::fromRoute('ai_provider_quant_cloud.oauth_connect')->toString(),
-      ]),
-      'severity' => $severity,
-    ],
-  ];
+  return RuntimeRequirementsHook::build(\Drupal::service('ai_provider_quant_cloud.auth'));
 }
 
 /**
@@ -113,4 +92,19 @@ function ai_provider_quant_cloud_update_10003(): void {
   if ($max_tokens <= 16384) {
     $config->set('model.max_tokens', 32768)->save(TRUE);
   }
+}
+
+/**
+ * Move OAuth token values out of configuration into the key_value store.
+ */
+function ai_provider_quant_cloud_update_10004(): string {
+  // The Key provider plugin is new in this release.
+  \Drupal::service('plugin.manager.key.key_provider')->clearCachedDefinitions();
+  $moved = \Drupal::service('ai_provider_quant_cloud.auth')->migrateTokenStorage();
+  if (!$moved) {
+    return (string) t('No OAuth token values were stored in configuration.');
+  }
+  return (string) t('Moved the values of @keys out of configuration. Export the configuration again (drush cex), so that the old token values leave your config sync directory.', [
+    '@keys' => implode(', ', $moved),
+  ]);
 }

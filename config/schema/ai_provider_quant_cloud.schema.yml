@@ -81,3 +81,11 @@ ai_provider.plugin.quant_cloud:
           type: string
         organization_id:
           type: string
+
+key.provider.quant_cloud_oauth:
+  type: mapping
+  label: 'Quant Cloud OAuth key provider settings'
+  mapping:
+    token:
+      type: string
+      label: 'Which stored token the key reads (access or refresh)'
