@@ -17,6 +17,8 @@ use Psr\Log\LoggerInterface;
  */
 class QuantCloudVectorDbClient {
 
+  use AuthRetryTrait;
+
   /**
    * The HTTP client.
    *
@@ -204,7 +206,7 @@ class QuantCloudVectorDbClient {
         ]);
       }
 
-      $response = $this->httpClient->post($url, $options);
+      $response = $this->sendWithAuthRetry('POST', $url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
 
@@ -259,7 +261,7 @@ class QuantCloudVectorDbClient {
         ]);
       }
 
-      $response = $this->httpClient->get($url, $options);
+      $response = $this->sendWithAuthRetry('GET', $url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
 
@@ -308,7 +310,7 @@ class QuantCloudVectorDbClient {
         ]);
       }
 
-      $response = $this->httpClient->delete($url, $options);
+      $response = $this->sendWithAuthRetry('DELETE', $url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
 
@@ -533,7 +535,7 @@ class QuantCloudVectorDbClient {
         ]);
       }
 
-      $response = $this->httpClient->delete($url, $options);
+      $response = $this->sendWithAuthRetry('DELETE', $url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
 

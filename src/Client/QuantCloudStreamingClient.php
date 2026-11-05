@@ -77,7 +77,7 @@ class QuantCloudStreamingClient extends QuantCloudClient {
     ];
 
     try {
-      $response = $this->httpClient->post($url, $request_options);
+      $response = $this->sendWithAuthRetry('POST', $url, $request_options);
 
       // Return the raw stream for the iterator to consume.
       return $response->getBody();
@@ -165,7 +165,7 @@ class QuantCloudStreamingClient extends QuantCloudClient {
     ];
 
     try {
-      $response = $this->httpClient->post($url, $request_options);
+      $response = $this->sendWithAuthRetry('POST', $url, $request_options);
       $body = $response->getBody();
 
       $full_content = '';

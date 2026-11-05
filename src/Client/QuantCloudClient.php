@@ -14,6 +14,8 @@ use GuzzleHttp\Exception\GuzzleException;
  */
 class QuantCloudClient {
 
+  use AuthRetryTrait;
+
   /**
    * Default chat model.
    */
@@ -216,7 +218,7 @@ class QuantCloudClient {
         ]);
       }
 
-      $response = $this->httpClient->post($url, $options);
+      $response = $this->sendWithAuthRetry('POST', $url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
 
@@ -405,7 +407,7 @@ class QuantCloudClient {
         ]);
       }
 
-      $response = $this->httpClient->get($url, $options);
+      $response = $this->sendWithAuthRetry('GET', $url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
 
