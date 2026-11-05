@@ -43,7 +43,7 @@ class AuthService {
   /**
    * Lock lifetime. It must be longer than the refresh HTTP timeout.
    */
-  protected const REFRESH_LOCK_TIMEOUT = 60;
+  protected const REFRESH_LOCK_TIMEOUT = 90;
 
   /**
    * Maximum seconds to wait for a peer that holds the refresh lock.
@@ -52,8 +52,12 @@ class AuthService {
 
   /**
    * HTTP timeout for the refresh grant.
+   *
+   * The portal commits a rotation even when the client disconnects, and it
+   * can stall for about 100 s once an hour. A long timeout lowers the chance
+   * that a rotated pair is lost because this side stopped waiting.
    */
-  protected const REFRESH_HTTP_TIMEOUT = 20;
+  protected const REFRESH_HTTP_TIMEOUT = 60;
 
   /**
    * Seconds before expiry at which the access token is refreshed.
@@ -479,7 +483,9 @@ class AuthService {
       ]);
     }
     catch (\Exception $e) {
-      $this->logger->error('OAuth token refresh request failed (@class). The stored tokens are kept.', [
+      // A timeout can occur after the portal committed the rotation, so the
+      // outcome is unknown. Keep the stored tokens.
+      $this->logger->error('OAuth token refresh request failed (@class); the outcome is unknown. The stored tokens are kept.', [
         '@class' => get_class($e),
       ]);
       return ['tokens' => NULL, 'rotated' => FALSE];
@@ -593,13 +599,11 @@ class AuthService {
       return $this->saveRefreshedTokens($result['tokens']);
     }
 
-    if ($result['rotated']) {
-      // A peer rotated the token. Use what the peer stored.
-      $this->resetTokenCaches();
-      return $this->getStoredUsableAccessToken();
-    }
-
-    return NULL;
+    // The refresh did not give new tokens: a peer rotated the token, the
+    // outcome is unknown, or the portal refused it. Use what is stored (a
+    // peer may have saved a new pair) while it has not expired.
+    $this->resetTokenCaches();
+    return $this->getStoredUsableAccessToken();
   }
 
   /**
