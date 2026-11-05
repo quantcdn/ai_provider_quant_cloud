@@ -385,20 +385,37 @@ class QuantCloudProvider extends AiProviderClientBase implements
         continue;
       }
       $fn = $tool['function'];
-      $spec = [
-        'name' => $fn['name'] ?? '',
-        'description' => $fn['description'] ?? '',
+      $bedrockTools[] = [
+        'toolSpec' => [
+          'name' => $fn['name'] ?? '',
+          'description' => $fn['description'] ?? '',
+          'inputSchema' => ['json' => $this->buildToolInputSchema($fn['parameters'] ?? NULL)],
+        ],
       ];
-      if (isset($fn['parameters']) && is_array($fn['parameters'])) {
-        $spec['inputSchema'] = ['json' => $fn['parameters']];
-      }
-      else {
-        // Bedrock still requires inputSchema even for tools with no params.
-        $spec['inputSchema'] = ['json' => ['type' => 'object', 'properties' => new \stdClass()]];
-      }
-      $bedrockTools[] = ['toolSpec' => $spec];
     }
     return $bedrockTools;
+  }
+
+  /**
+   * Build a Bedrock tool input schema that always has a properties object.
+   *
+   * Bedrock requires inputSchema even for tools with no parameters. From
+   * drupal/ai 1.5, a tool with no parameters renders as {type: object} with
+   * no properties, so an empty properties object is added here.
+   *
+   * @param mixed $parameters
+   *   The rendered OpenAI "parameters" schema, or NULL.
+   *
+   * @return array<string,mixed>
+   *   The JSON schema for inputSchema.json.
+   */
+  private function buildToolInputSchema(mixed $parameters): array {
+    $schema = is_array($parameters) ? $parameters : [];
+    $schema += ['type' => 'object'];
+    if (empty($schema['properties'])) {
+      $schema['properties'] = new \stdClass();
+    }
+    return $schema;
   }
 
   /**
