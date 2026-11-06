@@ -94,13 +94,15 @@ class QuantCloudConfigForm extends ConfigFormBase {
       ],
     ];
 
-    $this->addReconnectWarning($form);
+    $needs_reconnect = $this->addReconnectWarning($form);
 
     // Check if already OAuth connected
     $is_oauth_connected = $config->get('auth.method') === 'oauth' && $config->get('auth.access_token_key');
 
     if ($is_oauth_connected) {
-      $form['auth_section']['oauth_status'] = [
+      // The reconnect warning replaces the "connected" status: both at once
+      // contradict each other.
+      $form['auth_section']['oauth_status'] = $needs_reconnect ? [] : [
         '#type' => 'html_tag',
         '#tag' => 'div',
         '#attributes' => [
@@ -443,11 +445,14 @@ class QuantCloudConfigForm extends ConfigFormBase {
 
   /**
    * Show why and how to reconnect, when the stored tokens need it.
+   *
+   * @return bool
+   *   TRUE when the warning was added.
    */
-  protected function addReconnectWarning(array &$form): void {
+  protected function addReconnectWarning(array &$form): bool {
     $message = $this->authService->getReconnectMessage();
     if ($message === NULL) {
-      return;
+      return FALSE;
     }
     $form['auth_section']['reconnect_warning'] = [
       '#type' => 'container',
@@ -475,6 +480,7 @@ class QuantCloudConfigForm extends ConfigFormBase {
         '#prefix' => ' ',
       ];
     }
+    return TRUE;
   }
 
   /**
