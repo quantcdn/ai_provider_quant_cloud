@@ -943,6 +943,18 @@ class AuthService {
    *   The stored values, from OAuthTokenStore::getAll().
    */
   protected function keepLegacyTokenAlive(array $record): void {
+    if ($this->isRecordFromAnotherSite($record)) {
+      // A database copy must not keep the live site's token alive.
+      return;
+    }
+    if (empty($record[OAuthTokenStore::FINGERPRINT])) {
+      // A legacy token never refreshes, so nothing else stamps it. Stamp it
+      // here, so that a later database copy can see that it is a copy.
+      $this->tokenStore->set(OAuthTokenStore::FINGERPRINT, $this->getSiteFingerprint());
+    }
+    if ($this->isExpiring($record, self::CRON_MARGIN)) {
+      $this->logBlockedRefresh(self::RECONNECT_LEGACY_TOKEN);
+    }
     if ((int) ($record[OAuthTokenStore::KEEPALIVE_AT] ?? 0) > time() - self::LEGACY_KEEPALIVE_INTERVAL) {
       return;
     }
@@ -1470,14 +1482,7 @@ class AuthService {
    *   URL where users can generate an access token.
    */
   public function getTokenGenerationUrl(): string {
-    $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-    $platform = $config->get('platform') ?: 'quantcdn';
-
-    $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-
-    // Assume there's a tokens or API settings page
-    // Adjust this path based on your actual dashboard structure.
-    return $dashboard_url . '/account/api-tokens';
+    return $this->getDashboardUrl() . '/account/api-tokens';
   }
 
 }

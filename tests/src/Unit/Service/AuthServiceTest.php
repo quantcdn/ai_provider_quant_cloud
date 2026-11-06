@@ -343,6 +343,21 @@ class AuthServiceTest extends UnitTestCase {
   }
 
   /**
+   * A database copy does not keep the live site's legacy token alive.
+   */
+  public function testCronSkipsLegacyKeepAliveOnCopiedSite(): void {
+    $this->store->delete([OAuthTokenStore::REFRESH_TOKEN, OAuthTokenStore::EXPIRES_AT, OAuthTokenStore::LIFETIME]);
+    $this->service()->refreshFromCron();
+    $this->assertCount(1, $this->sentGets);
+    $this->assertIsArray($this->store->get(OAuthTokenStore::FINGERPRINT), 'the first keep-alive stamps the site');
+
+    new Settings(['hash_salt' => 'salt-copy']);
+    $this->store->set(OAuthTokenStore::KEEPALIVE_AT, time() - 8 * 86400);
+    $this->service()->refreshFromCron();
+    $this->assertCount(1, $this->sentGets);
+  }
+
+  /**
    * Cron makes no keep-alive call for a token with a refresh token.
    */
   public function testCronSkipsKeepAliveForRefreshableToken(): void {
