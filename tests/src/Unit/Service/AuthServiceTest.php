@@ -63,6 +63,13 @@ class AuthServiceTest extends UnitTestCase {
   protected array $sentRefreshTokens = [];
 
   /**
+   * URLs of GET requests.
+   *
+   * @var string[]
+   */
+  protected array $sentGets = [];
+
+  /**
    * Logged messages with placeholders replaced.
    *
    * @var string[]
@@ -312,6 +319,39 @@ class AuthServiceTest extends UnitTestCase {
     $pending = $this->store->get(OAuthTokenStore::PENDING);
     $this->assertSame(hash('sha256', 'refresh-old'), $pending['token']);
     $this->assertSame(1, $pending['attempts']);
+  }
+
+  /**
+   * Cron keeps a legacy token (no refresh token) alive once a week.
+   *
+   * Found in the e2e run: an upgraded 1.0.0 site that kept its legacy token
+   * made no call from cron, so an idle site reached the 60-day idle limit.
+   */
+  public function testCronKeepsLegacyTokenAliveWeekly(): void {
+    $this->store->delete([OAuthTokenStore::REFRESH_TOKEN, OAuthTokenStore::EXPIRES_AT, OAuthTokenStore::LIFETIME]);
+    $service = $this->service();
+
+    $service->refreshFromCron();
+    $service->refreshFromCron();
+    $this->assertCount(1, $this->sentGets);
+    $this->assertStringEndsWith('/api/oauth/user', $this->sentGets[0]);
+    $this->assertSame([], $this->sentRefreshTokens);
+
+    $this->store->set(OAuthTokenStore::KEEPALIVE_AT, time() - 8 * 86400);
+    $service->refreshFromCron();
+    $this->assertCount(2, $this->sentGets);
+  }
+
+  /**
+   * Cron makes no keep-alive call for a token with a refresh token.
+   */
+  public function testCronSkipsKeepAliveForRefreshableToken(): void {
+    $this->setExpiresIn(80 * 86400);
+
+    $this->service()->refreshFromCron();
+
+    $this->assertSame([], $this->sentGets);
+    $this->assertSame([], $this->sentRefreshTokens);
   }
 
   /**
@@ -943,6 +983,10 @@ class AuthServiceTest extends UnitTestCase {
       }
       $handler = $this->httpHandler ?? fn() => $this->errorResponse('invalid_request', 'unexpected');
       return $handler();
+    });
+    $client->method('get')->willReturnCallback(function (string $url): Response {
+      $this->sentGets[] = $url;
+      return new Response(200, [], '{"organizations":[{"machine_name":"org"}]}');
     });
     return $client;
   }

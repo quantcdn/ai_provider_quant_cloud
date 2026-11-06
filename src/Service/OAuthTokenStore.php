@@ -80,6 +80,13 @@ class OAuthTokenStore {
   public const LOGGED = 'logged';
 
   /**
+   * Unix time of the last cron keep-alive call for a legacy token.
+   *
+   * A legacy token (from release 1.0.0) has no refresh token.
+   */
+  public const KEEPALIVE_AT = 'keepalive_at';
+
+  /**
    * All names in the collection.
    */
   protected const NAMES = [
@@ -93,6 +100,7 @@ class OAuthTokenStore {
     self::CRON_RETRY_AFTER,
     self::PENDING,
     self::LOGGED,
+    self::KEEPALIVE_AT,
   ];
 
   /**

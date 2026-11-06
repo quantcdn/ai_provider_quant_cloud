@@ -162,6 +162,14 @@ class AuthService {
   protected const CRON_MARGIN = 3888000;
 
   /**
+   * Seconds between cron keep-alive calls for a token with no refresh token.
+   *
+   * Such a token never refreshes, so without a use it reaches the portal's
+   * 60-day idle limit. One authenticated call each week counts as a use.
+   */
+  protected const LEGACY_KEEPALIVE_INTERVAL = 604800;
+
+  /**
    * The HTTP client.
    *
    * @var \GuzzleHttp\ClientInterface
@@ -916,9 +924,30 @@ class AuthService {
     if (empty($record[OAuthTokenStore::ACCESS_TOKEN])) {
       return;
     }
+    if (empty($record[OAuthTokenStore::REFRESH_TOKEN])) {
+      $this->keepLegacyTokenAlive($record);
+      return;
+    }
     if ($this->getRefreshDecision($record, $margin, TRUE) === 'refresh') {
       $this->refreshIfAllowed($record, $margin);
     }
+  }
+
+  /**
+   * One authenticated call each week for a token with no refresh token.
+   *
+   * The time is stored before the call, so that a failing portal is not
+   * called on every cron run.
+   *
+   * @param array $record
+   *   The stored values, from OAuthTokenStore::getAll().
+   */
+  protected function keepLegacyTokenAlive(array $record): void {
+    if ((int) ($record[OAuthTokenStore::KEEPALIVE_AT] ?? 0) > time() - self::LEGACY_KEEPALIVE_INTERVAL) {
+      return;
+    }
+    $this->tokenStore->set(OAuthTokenStore::KEEPALIVE_AT, time());
+    $this->getOrganizations();
   }
 
   /**
