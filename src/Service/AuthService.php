@@ -2,6 +2,7 @@
 
 namespace Drupal\ai_provider_quant_cloud\Service;
 
+use Drupal\ai_provider_quant_cloud\PortalUrl;
 use Drupal\Component\Utility\Environment;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Config\FileStorageFactory;
@@ -357,14 +358,7 @@ class AuthService {
     }
 
     try {
-      $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-      $platform = $config->get('platform') ?: 'quantcdn';
-      $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-      if (!$dashboard_url) {
-        $dashboard_url = $platform === 'quantgov'
-          ? 'https://dash.quantgov.cloud'
-          : 'https://dashboard.quantcdn.io';
-      }
+      $dashboard_url = $this->getDashboardUrl();
 
       $response = $this->httpClient->get($dashboard_url . '/api/oauth/user', [
         'headers' => [
@@ -443,14 +437,7 @@ class AuthService {
    *   The authorization URL.
    */
   public function getAuthorizationUrl(string $state, string $redirect_uri, string $code_challenge): string {
-    $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-    $platform = $config->get('platform') ?: 'quantcdn';
-    $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-    if (!$dashboard_url) {
-      $dashboard_url = $platform === 'quantgov'
-        ? 'https://dash.quantgov.cloud'
-        : 'https://dashboard.quantcdn.io';
-    }
+    $dashboard_url = $this->getDashboardUrl();
 
     $auth_endpoint = $dashboard_url . '/oauth/authorize';
 
@@ -475,14 +462,7 @@ class AuthService {
    *   or NULL on failure.
    */
   public function exchangeCodeForToken(string $code, string $redirect_uri, string $code_verifier): ?array {
-    $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-    $platform = $config->get('platform') ?: 'quantcdn';
-    $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-    if (!$dashboard_url) {
-      $dashboard_url = $platform === 'quantgov'
-        ? 'https://dash.quantgov.cloud'
-        : 'https://dashboard.quantcdn.io';
-    }
+    $dashboard_url = $this->getDashboardUrl();
 
     $token_endpoint = $dashboard_url . '/oauth/token';
 
@@ -1451,11 +1431,7 @@ class AuthService {
   protected function getDashboardUrl(): string {
     $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
     $platform = $config->get('platform') ?: 'quantcdn';
-    $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-    if ($dashboard_url) {
-      return $dashboard_url;
-    }
-    return $platform === 'quantgov' ? 'https://dash.quantgov.cloud' : 'https://dashboard.quantcdn.io';
+    return PortalUrl::forPlatform($platform, $config->get("platforms.{$platform}.dashboard_url"));
   }
 
   /**

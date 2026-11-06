@@ -2,6 +2,7 @@
 
 namespace Drupal\ai_provider_quant_cloud\Client;
 
+use Drupal\ai_provider_quant_cloud\PortalUrl;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\ai_provider_quant_cloud\Service\AuthService;
@@ -121,15 +122,7 @@ class QuantCloudVectorDbClient {
   protected function getDashboardUrl(): string {
     $config = $this->getConfig();
     $platform = $config->get('platform') ?: 'quantcdn';
-
-    $urls = [
-      'quantcdn' => 'https://dashboard.quantcdn.io',
-      'quantgov' => 'https://dash.quantgov.cloud',
-      'quantcdn_staging' => 'https://portal.stage.quantcdn.io',
-      'quantgov_staging' => 'https://dash.stage.quantgov.cloud',
-    ];
-
-    return rtrim($urls[$platform] ?? $urls['quantcdn'], '/');
+    return PortalUrl::forPlatform($platform, $config->get("platforms.{$platform}.dashboard_url"));
   }
 
   /**
