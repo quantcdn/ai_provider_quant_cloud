@@ -2,15 +2,172 @@
 
 namespace Drupal\ai_provider_quant_cloud\Service;
 
+use Drupal\ai_provider_quant_cloud\PortalUrl;
+use Drupal\Component\Utility\Environment;
 use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Config\FileStorageFactory;
+use Drupal\Core\Config\StorageInterface;
+use Drupal\Core\Database\Connection;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\Lock\LockBackendInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
+use Drupal\Core\State\StateInterface;
+use Drupal\Core\StringTranslation\TranslatableMarkup;
+use Drupal\key\KeyInterface;
 use Drupal\key\KeyRepositoryInterface;
 use GuzzleHttp\ClientInterface;
+use Psr\Http\Message\ResponseInterface;
+use Psr\Log\LogLevel;
 
 /**
  * Service for managing authentication with Quant Cloud API.
+ *
+ * OAuth token values live in the module's key_value store (OAuthTokenStore),
+ * not in config. The Key entities that settings refer to only point at that
+ * store, so config export and import never carry or change a token.
  */
 class AuthService {
+
+  /**
+   * Key entity ID that points at the OAuth access token.
+   */
+  public const ACCESS_KEY_ID = 'quant_cloud_oauth_access_token';
+
+  /**
+   * Key entity ID that points at the OAuth refresh token.
+   */
+  public const REFRESH_KEY_ID = 'quant_cloud_oauth_refresh_token';
+
+  /**
+   * The Key provider plugin that reads from the token store.
+   */
+  public const KEY_PROVIDER_ID = 'quant_cloud_oauth';
+
+  /**
+   * The module's Key IDs and the token that each one points at.
+   */
+  public const MODULE_KEYS = [
+    self::ACCESS_KEY_ID => 'access',
+    self::REFRESH_KEY_ID => 'refresh',
+  ];
+
+  /**
+   * The token store name for each module Key ID.
+   */
+  protected const MODULE_KEY_STORE_NAMES = [
+    self::ACCESS_KEY_ID => OAuthTokenStore::ACCESS_TOKEN,
+    self::REFRESH_KEY_ID => OAuthTokenStore::REFRESH_TOKEN,
+  ];
+
+  /**
+   * State key that held the access-token expiry before 1.1.0.
+   */
+  public const LEGACY_EXPIRES_AT_STATE = 'quant_cloud_oauth_expires_at';
+
+  /**
+   * State key that held a site fingerprint during 1.1.0 development.
+   *
+   * It used another formula, so it is deleted and not copied.
+   */
+  public const LEGACY_FINGERPRINT_STATE = 'quant_cloud_oauth_site_fingerprint';
+
+  /**
+   * Reconnect reason: the stored tokens were issued to another site.
+   */
+  public const RECONNECT_OTHER_SITE = 'other_site';
+
+  /**
+   * Reconnect reason: OAuth is connected but no refresh token is stored.
+   */
+  public const RECONNECT_LEGACY_TOKEN = 'legacy_token';
+
+  /**
+   * Reconnect reason: the portal refused the refresh token for good.
+   */
+  public const RECONNECT_REFUSED = 'refused';
+
+  /**
+   * Lock name that serializes refresh-token use across processes.
+   */
+  protected const REFRESH_LOCK_ID = 'ai_provider_quant_cloud.oauth_refresh';
+
+  /**
+   * Lock lifetime: one refresh request (60 s) plus a margin.
+   */
+  protected const REFRESH_LOCK_TIMEOUT = 90;
+
+  /**
+   * Seconds in which web requests do not refresh after an unknown outcome.
+   *
+   * Cron still tries. This keeps every request from waiting on a slow
+   * portal.
+   */
+  protected const REQUEST_BACKOFF = 60;
+
+  /**
+   * Seconds in which cron does not refresh after an unknown outcome.
+   *
+   * A recent pending refresh overrides this: it is retried at once.
+   */
+  protected const CRON_BACKOFF = 600;
+
+  /**
+   * Age in seconds after which a pending refresh may be retried.
+   *
+   * For 30 s after a rotation, the portal answers the previous refresh
+   * token with "just rotated". A retry before then would also race the
+   * original request, which can still be waiting on the portal.
+   */
+  protected const PENDING_MIN_AGE = 45;
+
+  /**
+   * Age in seconds up to which a pending refresh may be retried.
+   *
+   * The portal re-issues a lost rotation up to five minutes after it.
+   */
+  protected const PENDING_WINDOW = 240;
+
+  /**
+   * Retries of the same refresh token per pending marker.
+   */
+  protected const PENDING_MAX_RETRIES = 2;
+
+  /**
+   * Maximum seconds to wait for a peer that holds the refresh lock.
+   */
+  protected const REFRESH_LOCK_WAIT = 30;
+
+  /**
+   * HTTP timeout for the refresh grant.
+   *
+   * The portal commits a rotation even when the client disconnects, and it
+   * can stall for about 100 s once an hour. A long timeout lowers the chance
+   * that a rotated pair is lost because this side stopped waiting.
+   */
+  protected const REFRESH_HTTP_TIMEOUT = 60;
+
+  /**
+   * Seconds before expiry at which a request refreshes the access token.
+   *
+   * This is the fallback. Cron refreshes much earlier (CRON_MARGIN).
+   */
+  protected const EXPIRY_MARGIN = 60;
+
+  /**
+   * Seconds before expiry at which cron refreshes the access token.
+   *
+   * 45 days. A refresh also keeps the chain inside the portal's 60-day idle
+   * limit.
+   */
+  protected const CRON_MARGIN = 3888000;
+
+  /**
+   * Seconds between cron keep-alive calls for a token with no refresh token.
+   *
+   * Such a token never refreshes, so without a use it reaches the portal's
+   * 60-day idle limit. One authenticated call each week counts as a use.
+   */
+  protected const LEGACY_KEEPALIVE_INTERVAL = 604800;
 
   /**
    * The HTTP client.
@@ -48,7 +205,7 @@ class AuthService {
   protected $entityTypeManager;
 
   /**
-   * The state service.
+   * The state service (read only to move pre-1.1.0 values).
    *
    * @var \Drupal\Core\State\StateInterface
    */
@@ -62,6 +219,27 @@ class AuthService {
   protected $lock;
 
   /**
+   * The OAuth token store.
+   *
+   * @var \Drupal\ai_provider_quant_cloud\Service\OAuthTokenStore
+   */
+  protected $tokenStore;
+
+  /**
+   * The default database connection.
+   *
+   * @var \Drupal\Core\Database\Connection
+   */
+  protected $database;
+
+  /**
+   * The site fingerprint.
+   *
+   * @var \Drupal\ai_provider_quant_cloud\Service\SiteFingerprint
+   */
+  protected $siteFingerprint;
+
+  /**
    * Constructs an AuthService.
    */
   public function __construct(
@@ -69,9 +247,11 @@ class AuthService {
     ConfigFactoryInterface $config_factory,
     LoggerChannelFactoryInterface $logger_factory,
     KeyRepositoryInterface $key_repository,
-    \Drupal\Core\Entity\EntityTypeManagerInterface $entity_type_manager,
-    \Drupal\Core\State\StateInterface $state,
-    \Drupal\Core\Lock\LockBackendInterface $lock
+    EntityTypeManagerInterface $entity_type_manager,
+    StateInterface $state,
+    LockBackendInterface $lock,
+    OAuthTokenStore $token_store,
+    Connection $database,
   ) {
     $this->httpClient = $http_client;
     $this->configFactory = $config_factory;
@@ -80,24 +260,89 @@ class AuthService {
     $this->entityTypeManager = $entity_type_manager;
     $this->state = $state;
     $this->lock = $lock;
+    $this->tokenStore = $token_store;
+    $this->database = $database;
+    $this->siteFingerprint = new SiteFingerprint($config_factory);
   }
 
   /**
-   * Get the access token from Key module.
+   * Get the stored access token, without a refresh.
+   *
+   * API calls must use getValidAccessToken() instead.
+   *
+   * @param bool $fresh
+   *   TRUE to bypass the per-request Key value cache. The OAuth token store
+   *   is always read from the database.
    *
    * @return string|null
    *   The access token or NULL if not configured.
    */
-  public function getAccessToken(): ?string {
+  public function getAccessToken(bool $fresh = FALSE): ?string {
+    if ($this->usesModuleTokens()) {
+      return $this->storedToken(OAuthTokenStore::ACCESS_TOKEN) ?? $this->readUnmigratedKeyToken();
+    }
+    return $this->readTokenKey('auth.access_token_key', $fresh);
+  }
+
+  /**
+   * The access token from a module Key that update 10004 has not moved yet.
+   *
+   * Between a code deploy and "drush updb", the token is still in the Key's
+   * config. It is read, but never refreshed from here.
+   */
+  protected function readUnmigratedKeyToken(): ?string {
+    $key = $this->keyRepository->getKey(self::ACCESS_KEY_ID);
+    if (!$key instanceof KeyInterface || $this->isPointerKey($key)) {
+      return NULL;
+    }
+    return $key->getKeyValue(TRUE) ?: NULL;
+  }
+
+  /**
+   * Whether a Key uses the pointer provider, not a stored value.
+   */
+  protected function isPointerKey(KeyInterface $key): bool {
+    return $key->getKeyProvider()->getPluginId() === self::KEY_PROVIDER_ID;
+  }
+
+  /**
+   * Whether the site uses the OAuth tokens that this module stores.
+   *
+   * Manual mode, and any Key that an administrator selected, use the Key
+   * module as before.
+   */
+  public function usesModuleTokens(): bool {
     $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-    $key_id = $config->get('auth.access_token_key');
-    
+    return $config->get('auth.method') === 'oauth'
+      && $config->get('auth.access_token_key') === self::ACCESS_KEY_ID;
+  }
+
+  /**
+   * A non-empty token string from the store, or NULL.
+   */
+  protected function storedToken(string $name): ?string {
+    $value = $this->tokenStore->get($name);
+    return is_string($value) && $value !== '' ? $value : NULL;
+  }
+
+  /**
+   * Read a token from the Key entity that a settings value names.
+   *
+   * @param string $config_name
+   *   The settings key that holds the Key entity ID.
+   * @param bool $fresh
+   *   TRUE to bypass the per-request Key value cache.
+   */
+  protected function readTokenKey(string $config_name, bool $fresh = FALSE): ?string {
+    $key_id = $this->configFactory->get('ai_provider_quant_cloud.settings')->get($config_name);
     if (!$key_id) {
       return NULL;
     }
-    
     $key = $this->keyRepository->getKey($key_id);
-    return $key ? $key->getKeyValue() : NULL;
+    if (!$key) {
+      return NULL;
+    }
+    return $key->getKeyValue($fresh) ?: NULL;
   }
 
   /**
@@ -114,21 +359,14 @@ class AuthService {
    *   array on failure / no orgs.
    */
   public function getOrganizations(): array {
-    $token = $this->getAccessToken();
+    $token = $this->getValidAccessToken();
 
     if (!$token) {
       return [];
     }
 
     try {
-      $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-      $platform = $config->get('platform') ?: 'quantcdn';
-      $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-      if (!$dashboard_url) {
-        $dashboard_url = $platform === 'quantgov'
-          ? 'https://dash.quantgov.cloud'
-          : 'https://dashboard.quantcdn.io';
-      }
+      $dashboard_url = $this->getDashboardUrl();
 
       $response = $this->httpClient->get($dashboard_url . '/api/oauth/user', [
         'headers' => [
@@ -156,7 +394,8 @@ class AuthService {
         'machine_name' => $org['machine_name'] ?? '',
       ], array_values($orgs));
 
-    } catch (\Exception $e) {
+    }
+    catch (\Exception $e) {
       $this->logger->error('Error fetching user/orgs: @message', [
         '@message' => $e->getMessage(),
       ]);
@@ -206,14 +445,7 @@ class AuthService {
    *   The authorization URL.
    */
   public function getAuthorizationUrl(string $state, string $redirect_uri, string $code_challenge): string {
-    $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-    $platform = $config->get('platform') ?: 'quantcdn';
-    $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-    if (!$dashboard_url) {
-      $dashboard_url = $platform === 'quantgov'
-        ? 'https://dash.quantgov.cloud'
-        : 'https://dashboard.quantcdn.io';
-    }
+    $dashboard_url = $this->getDashboardUrl();
 
     $auth_endpoint = $dashboard_url . '/oauth/authorize';
 
@@ -238,14 +470,7 @@ class AuthService {
    *   or NULL on failure.
    */
   public function exchangeCodeForToken(string $code, string $redirect_uri, string $code_verifier): ?array {
-    $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-    $platform = $config->get('platform') ?: 'quantcdn';
-    $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-    if (!$dashboard_url) {
-      $dashboard_url = $platform === 'quantgov'
-        ? 'https://dash.quantgov.cloud'
-        : 'https://dashboard.quantcdn.io';
-    }
+    $dashboard_url = $this->getDashboardUrl();
 
     $token_endpoint = $dashboard_url . '/oauth/token';
 
@@ -263,9 +488,9 @@ class AuthService {
       ]);
 
       if ($response->getStatusCode() !== 200) {
-        $this->logger->error('Token exchange failed with status @status: @body', [
+        $this->logger->error('Token exchange failed with status @status: @reason', [
           '@status' => $response->getStatusCode(),
-          '@body' => substr((string) $response->getBody(), 0, 500),
+          '@reason' => $response->getReasonPhrase(),
         ]);
         return NULL;
       }
@@ -273,7 +498,8 @@ class AuthService {
       $data = json_decode($response->getBody()->getContents(), TRUE);
       return isset($data['access_token']) ? $data : NULL;
 
-    } catch (\Exception $e) {
+    }
+    catch (\Exception $e) {
       $this->logger->error('Failed to exchange OAuth code: @message', [
         '@message' => $e->getMessage(),
       ]);
@@ -282,199 +508,971 @@ class AuthService {
   }
 
   /**
-   * Persist a token response into Drupal Key + state.
+   * Store the tokens of a new OAuth connection.
    *
-   * Stores access + refresh tokens as Key entities, plus the absolute
-   * access-token expiry timestamp in Drupal state. Flips the module to
-   * OAuth mode so subsequent calls use the OAuth-issued credentials.
+   * This is the connect path. A refresh uses saveRotatedTokens(), which
+   * writes no config. Connecting clears a recorded refusal and stamps this
+   * site's fingerprint.
    */
   public function persistTokens(array $token_data): void {
     if (empty($token_data['access_token'])) {
       throw new \InvalidArgumentException('persistTokens called with no access_token');
     }
+    $has_refresh = !empty($token_data['refresh_token']);
 
-    $now = time();
-    $access_expires_at = isset($token_data['expires_in'])
-      ? $now + (int) $token_data['expires_in']
-      : NULL;
-
-    $this->writeKey('quant_cloud_oauth_access_token', $token_data['access_token'], 'Quant Cloud — OAuth Access Token');
-
-    if (!empty($token_data['refresh_token'])) {
-      $this->writeKey('quant_cloud_oauth_refresh_token', $token_data['refresh_token'], 'Quant Cloud — OAuth Refresh Token');
+    $this->tokenStore->saveTokens($token_data);
+    $stale = [
+      OAuthTokenStore::REFUSAL,
+      OAuthTokenStore::RETRY_AFTER,
+      OAuthTokenStore::CRON_RETRY_AFTER,
+      OAuthTokenStore::PENDING,
+      OAuthTokenStore::LOGGED,
+    ];
+    if (!$has_refresh) {
+      // A refresh token from an earlier connection belongs to another chain.
+      $stale[] = OAuthTokenStore::REFRESH_TOKEN;
     }
+    $this->tokenStore->delete($stale);
+    $this->tokenStore->set(OAuthTokenStore::FINGERPRINT, $this->getSiteFingerprint());
 
-    if ($access_expires_at !== NULL) {
-      $this->state->set('quant_cloud_oauth_expires_at', $access_expires_at);
-    }
-    else {
-      $this->state->delete('quant_cloud_oauth_expires_at');
+    $this->ensureKeyEntity(self::ACCESS_KEY_ID, 'access', 'Quant Cloud — OAuth Access Token');
+    if ($has_refresh) {
+      $this->ensureKeyEntity(self::REFRESH_KEY_ID, 'refresh', 'Quant Cloud — OAuth Refresh Token');
     }
 
     $config = $this->configFactory->getEditable('ai_provider_quant_cloud.settings');
     $config->set('auth.method', 'oauth');
-    $config->set('auth.access_token_key', 'quant_cloud_oauth_access_token');
-    if (!empty($token_data['refresh_token'])) {
-      $config->set('auth.refresh_token_key', 'quant_cloud_oauth_refresh_token');
-    }
+    $config->set('auth.access_token_key', self::ACCESS_KEY_ID);
+    $config->set('auth.refresh_token_key', $has_refresh ? self::REFRESH_KEY_ID : NULL);
     $config->save();
   }
 
   /**
-   * Create or replace a Key entity holding a token value.
+   * Remove the OAuth connection: the tokens, their Keys and the settings.
    */
-  protected function writeKey(string $key_id, string $value, string $label): void {
-    $existing = $this->keyRepository->getKey($key_id);
-    if ($existing) {
-      $existing->delete();
+  public function disconnect(): void {
+    foreach ([self::ACCESS_KEY_ID, self::REFRESH_KEY_ID] as $key_id) {
+      $key = $this->keyRepository->getKey($key_id);
+      if ($key) {
+        $key->delete();
+      }
     }
-    $key = $this->entityTypeManager->getStorage('key')->create([
-      'id' => $key_id,
-      'label' => $label,
-      'description' => 'Auto-generated by the Quant Cloud AI provider during OAuth connection. Do not edit manually.',
-      'key_type' => 'authentication',
-      'key_provider' => 'config',
-      'key_input' => 'text_field',
-      'key_provider_settings' => [
-        'key_value' => $value,
-      ],
-    ]);
-    $key->save();
+    $this->tokenStore->clear();
+
+    $config = $this->configFactory->getEditable('ai_provider_quant_cloud.settings');
+    $config->set('auth.method', 'manual');
+    $config->set('auth.access_token_key', NULL);
+    $config->set('auth.refresh_token_key', NULL);
+    $config->save();
   }
 
   /**
-   * Get the current refresh token, or NULL if none stored.
+   * Make sure a Key entity points at the token store.
+   *
+   * An existing Key is changed in place, so its UUID and the config that
+   * depends on it stay.
+   *
+   * @param string $key_id
+   *   The Key entity ID.
+   * @param string $token
+   *   Which token the Key points at: 'access' or 'refresh'.
+   * @param string $label
+   *   The label for a new Key.
    */
-  protected function getRefreshToken(): ?string {
-    $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-    $key_id = $config->get('auth.refresh_token_key');
-    if (!$key_id) {
+  public function ensureKeyEntity(string $key_id, string $token, string $label): void {
+    $storage = $this->entityTypeManager->getStorage('key');
+    $storage->resetCache([$key_id]);
+    $key = $storage->load($key_id);
+    if ($key instanceof KeyInterface) {
+      if (!$this->isPointerKey($key)) {
+        $this->pointKeyAtStore($key, $token);
+        $key->save();
+      }
+      return;
+    }
+    $storage->create([
+      'id' => $key_id,
+      'label' => $label,
+      'description' => 'Auto-generated by the Quant Cloud AI provider. It points at a token that is stored outside configuration. Do not edit manually.',
+      'key_type' => 'authentication',
+      'key_provider' => self::KEY_PROVIDER_ID,
+      'key_provider_settings' => ['token' => $token],
+      'key_input' => 'none',
+    ])->save();
+  }
+
+  /**
+   * Change a Key to the pointer provider. The caller saves it.
+   */
+  protected function pointKeyAtStore(KeyInterface $key, string $token): void {
+    $key->setPlugin('key_provider', self::KEY_PROVIDER_ID);
+    $key->set('key_provider_settings', ['token' => $token]);
+    $key->setPlugin('key_input', 'none');
+    $key->set('key_input_settings', []);
+  }
+
+  /**
+   * Copy a module Key's stored value into an empty token store slot.
+   *
+   * Called before a module Key is deleted or changed, so that a config
+   * import that runs before "drush updb" does not destroy the token.
+   */
+  public function rescueKeyValue(KeyInterface $key): void {
+    $name = self::MODULE_KEY_STORE_NAMES[$key->id()] ?? NULL;
+    if ($name === NULL || $this->isPointerKey($key) || $this->storedToken($name) !== NULL) {
+      return;
+    }
+    $value = (string) $key->getKeyValue(TRUE);
+    if ($value !== '') {
+      $this->tokenStore->set($name, $value);
+    }
+  }
+
+  /**
+   * Keep a module Key on the pointer provider when it is saved.
+   *
+   * Implements the logic of hook_key_presave(). A config import of an
+   * export from an earlier release would otherwise put a token value back
+   * into active config.
+   */
+  public function protectModuleKey(KeyInterface $key, ?KeyInterface $original = NULL): void {
+    $token = self::MODULE_KEYS[$key->id()] ?? NULL;
+    if ($token === NULL || $this->isPointerKey($key) || !$this->usesModuleTokens()) {
+      return;
+    }
+    // The active Key holds the current token; an imported one can be old.
+    $this->rescueKeyValue($original ?? $key);
+    $this->pointKeyAtStore($key, $token);
+    // The entity calculated its dependencies before this hook ran. The
+    // pointer provider belongs to this module, so the Key must depend on it.
+    $key->calculateDependencies();
+  }
+
+  /**
+   * The module Key IDs that still hold a value instead of a pointer.
+   *
+   * @return string[]
+   *   Key IDs; empty when all module Keys are pointers.
+   */
+  public function getUnconvertedKeyIds(): array {
+    if (!$this->usesModuleTokens()) {
+      return [];
+    }
+    $ids = [];
+    foreach (array_keys(self::MODULE_KEYS) as $key_id) {
+      $key = $this->keyRepository->getKey($key_id);
+      if ($key instanceof KeyInterface && !$this->isPointerKey($key)) {
+        $ids[] = $key_id;
+      }
+    }
+    return $ids;
+  }
+
+  /**
+   * The module Key IDs whose export in the sync directory holds a token.
+   *
+   * An export from an earlier release keeps the old token in the config
+   * sync directory until the site runs "drush cex" again.
+   *
+   * @return string[]
+   *   Key IDs; empty when no sync export holds a token.
+   */
+  public function getSyncKeysWithTokens(): array {
+    $sync = $this->getSyncStorage();
+    if ($sync === NULL) {
+      return [];
+    }
+    $ids = [];
+    foreach (array_keys(self::MODULE_KEYS) as $key_id) {
+      $data = $sync->read('key.key.' . $key_id);
+      if (is_array($data) && ($data['key_provider'] ?? '') !== self::KEY_PROVIDER_ID) {
+        $ids[] = $key_id;
+      }
+    }
+    return $ids;
+  }
+
+  /**
+   * The config sync storage, or NULL when no sync directory is set.
+   */
+  protected function getSyncStorage(): ?StorageInterface {
+    try {
+      return FileStorageFactory::getSync();
+    }
+    catch (\Exception $e) {
       return NULL;
     }
+  }
+
+  /**
+   * Move tokens stored by earlier releases into the token store.
+   *
+   * Releases before 1.1.0 kept the token values in Key entities with the
+   * 'config' provider, and the expiry in state. This keeps the Key IDs and
+   * UUIDs, so settings and other code that refer to them do not change. It
+   * is safe to run again, and it does not touch manual-mode Keys with other
+   * IDs. It does not stamp a site fingerprint: an unstamped token counts as
+   * this site's own and gets a fingerprint on the next refresh or connect.
+   *
+   * @return string[]
+   *   What was moved, for the update hook message.
+   */
+  public function migrateTokenStorage(): array {
+    $moved = [];
+    foreach (self::MODULE_KEYS as $key_id => $token) {
+      if ($this->migrateKey($key_id, $token)) {
+        $moved[] = $key_id;
+      }
+    }
+    $this->migrateStateValues();
+    return $moved;
+  }
+
+  /**
+   * Move one Key's value into the store and point the Key at the store.
+   *
+   * @return bool
+   *   TRUE if the Key held a value.
+   */
+  protected function migrateKey(string $key_id, string $token): bool {
     $key = $this->keyRepository->getKey($key_id);
-    return $key ? $key->getKeyValue() : NULL;
+    if (!$key instanceof KeyInterface || $this->isPointerKey($key)) {
+      return FALSE;
+    }
+    $this->rescueKeyValue($key);
+    $this->pointKeyAtStore($key, $token);
+    $key->save();
+    return TRUE;
+  }
+
+  /**
+   * Move the expiry out of state, and drop the old fingerprint.
+   *
+   * Without a refresh token the old expiry is dropped. Release 1.0.0 stored
+   * a default one-hour expiry even for a legacy non-expiring token, and an
+   * expiry that can not be refreshed would block that token.
+   */
+  protected function migrateStateValues(): void {
+    $record = $this->tokenStore->getAll();
+    $has_refresh = !empty($record[OAuthTokenStore::REFRESH_TOKEN]);
+    $expires_at = (int) $this->state->get(self::LEGACY_EXPIRES_AT_STATE, 0);
+    if ($has_refresh && $expires_at > 0 && empty($record[OAuthTokenStore::EXPIRES_AT])) {
+      $this->tokenStore->set(OAuthTokenStore::EXPIRES_AT, $expires_at);
+    }
+    $this->migrateLegacyStateFingerprint($record);
+    $this->state->deleteMultiple([self::LEGACY_EXPIRES_AT_STATE, self::LEGACY_FINGERPRINT_STATE]);
+  }
+
+  /**
+   * Keep the verdict of a development-build state fingerprint.
+   *
+   * A value that matches this site's result of the same formula means the
+   * tokens are this site's own; they stay unstamped. Another value means
+   * another site stored them; the record is marked as foreign until an
+   * administrator confirms or reconnects.
+   */
+  protected function migrateLegacyStateFingerprint(array $record): void {
+    $legacy = $this->state->get(self::LEGACY_FINGERPRINT_STATE);
+    if (!is_string($legacy) || $legacy === '' || !empty($record[OAuthTokenStore::FINGERPRINT])) {
+      return;
+    }
+    if (!hash_equals($legacy, $this->siteFingerprint->computeLegacyStateFormat())) {
+      $this->tokenStore->set(OAuthTokenStore::FINGERPRINT, ['legacy' => hash('sha256', $legacy)]);
+    }
   }
 
   /**
    * Exchange a refresh token for a new access + refresh token pair.
-   * Uses the public-client form (no client_secret).
+   *
+   * This sends the refresh token without the refresh lock, so it can replay
+   * a rotated token and revoke the chain. Use getValidAccessToken() or
+   * refreshFromCron().
    *
    * @param string $refresh_token
    *   The refresh token (qcr_-prefixed plaintext).
    *
    * @return array|null
    *   New token response or NULL on failure.
+   *
+   * @internal
    */
   public function refreshToken(string $refresh_token): ?array {
-    $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-    $platform = $config->get('platform') ?: 'quantcdn';
-    $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-    if (!$dashboard_url) {
-      $dashboard_url = $platform === 'quantgov'
-        ? 'https://dash.quantgov.cloud'
-        : 'https://dashboard.quantcdn.io';
-    }
+    return $this->requestRefresh($refresh_token)['tokens'];
+  }
 
-    $token_endpoint = $dashboard_url . '/oauth/token';
-
+  /**
+   * Send the refresh grant and classify the result.
+   *
+   * @return array{tokens: ?array, outcome: string, error: string, description: string}
+   *   'outcome' is 'ok', 'rotated' (a peer rotated the token moments ago),
+   *   'refused' (final: invalid_grant or invalid_client), 'unknown' (no
+   *   answer, a 5xx, or a 200 without tokens: the portal may have rotated)
+   *   or 'failed' (any other error).
+   */
+  protected function requestRefresh(string $refresh_token): array {
     try {
-      $response = $this->httpClient->post($token_endpoint, [
+      $response = $this->httpClient->post($this->getDashboardUrl() . '/oauth/token', [
         'form_params' => [
           'grant_type' => 'refresh_token',
           'refresh_token' => $refresh_token,
           'client_id' => 'drupal-ai-provider',
         ],
-        'timeout' => 30,
+        'timeout' => self::REFRESH_HTTP_TIMEOUT,
         'http_errors' => FALSE,
       ]);
-
-      if ($response->getStatusCode() !== 200) {
-        $this->logger->error('Refresh failed with status @status: @body', [
-          '@status' => $response->getStatusCode(),
-          '@body' => substr((string) $response->getBody(), 0, 500),
-        ]);
-        return NULL;
-      }
-
-      $data = json_decode($response->getBody()->getContents(), TRUE);
-      return isset($data['access_token']) ? $data : NULL;
-
-    } catch (\Exception $e) {
-      $this->logger->error('Failed to refresh token: @message', [
-        '@message' => $e->getMessage(),
-      ]);
-      return NULL;
     }
+    catch (\Exception $e) {
+      // A timeout can occur after the portal committed the rotation, so the
+      // outcome is unknown. Keep the stored tokens.
+      $this->logger->error('OAuth token refresh request failed (@class); the outcome is unknown. The stored tokens are kept.', [
+        '@class' => get_class($e),
+      ]);
+      return ['tokens' => NULL, 'outcome' => 'unknown', 'error' => '', 'description' => ''];
+    }
+
+    return $this->parseRefreshResponse($response);
+  }
+
+  /**
+   * Turn a refresh-grant response into a result array.
+   *
+   * @return array{tokens: ?array, outcome: string, error: string, description: string}
+   *   See requestRefresh().
+   */
+  protected function parseRefreshResponse(ResponseInterface $response): array {
+    $status = $response->getStatusCode();
+    $data = json_decode((string) $response->getBody(), TRUE);
+    $data = is_array($data) ? $data : [];
+
+    if ($status === 200 && !empty($data['access_token'])) {
+      return ['tokens' => $data, 'outcome' => 'ok', 'error' => '', 'description' => ''];
+    }
+
+    // The error fields are fixed portal strings, not secrets.
+    $error = (string) ($data['error'] ?? '');
+    $description = mb_substr((string) ($data['error_description'] ?? ''), 0, 200);
+    $outcome = $this->classifyRefreshError($status, $error, $description);
+    if ($outcome !== 'refused') {
+      $this->logger->log($outcome === 'rotated' ? LogLevel::NOTICE : LogLevel::ERROR, 'OAuth token refresh rejected with status @status (@error: @description). The stored tokens are kept.', [
+        '@status' => $status,
+        '@error' => $error ?: 'none',
+        '@description' => $description ?: 'none',
+      ]);
+    }
+    return ['tokens' => NULL, 'outcome' => $outcome, 'error' => $error, 'description' => $description];
+  }
+
+  /**
+   * Classify a refresh error as 'rotated', 'refused', 'unknown' or 'failed'.
+   */
+  protected function classifyRefreshError(int $status, string $error, string $description): string {
+    if ($error === 'invalid_grant' && stripos($description, 'just rotated') !== FALSE) {
+      return 'rotated';
+    }
+    if (in_array($error, ['invalid_grant', 'invalid_client'], TRUE)) {
+      return 'refused';
+    }
+    return $status >= 500 || $status === 200 ? 'unknown' : 'failed';
   }
 
   /**
    * Return the current access token, refreshing it transparently if expired.
    *
-   * Refresh window is "expired or expiring within 60 seconds" so a near-expiry
-   * token doesn't get used for a long-running request. Concurrent refresh
-   * attempts are serialized through the lock backend; a worker that loses the
-   * race waits for the winner and re-reads state, avoiding a double refresh
-   * (which the portal would treat as concurrent-refresh / token reuse).
+   * The portal rotates the refresh token on every use and revokes the whole
+   * chain when an old one is replayed, so only the holder of the refresh lock
+   * may send a refresh token, and it saves the rotated token before it
+   * releases the lock. A failed refresh never deletes the stored tokens.
    *
-   * Returns NULL if no usable token can be obtained — caller should redirect
-   * the user to re-OAuth.
+   * Cron refreshes long before expiry (refreshFromCron()); the refresh here
+   * is the fallback for sites where cron does not run.
+   *
+   * @return string|null
+   *   The access token, or NULL if no usable token can be obtained.
    */
   public function getValidAccessToken(): ?string {
-    $access = $this->getAccessToken();
-    if (!$access) {
-      return NULL;
+    if (!$this->usesModuleTokens()) {
+      return $this->getAccessToken();
     }
 
-    if (!$this->isAccessTokenExpiring()) {
-      return $access;
+    $record = $this->tokenStore->getAll();
+    if (empty($record[OAuthTokenStore::ACCESS_TOKEN])) {
+      return $this->readUnmigratedKeyToken();
     }
 
-    $refresh = $this->getRefreshToken();
-    if (!$refresh) {
-      $this->logger->warning('Access token expired and no refresh token is stored — re-authentication required.');
-      return NULL;
+    $decision = $this->getRefreshDecision($record, self::EXPIRY_MARGIN, FALSE);
+    if ($decision === 'none') {
+      return $record[OAuthTokenStore::ACCESS_TOKEN];
     }
-
-    $lock_id = 'ai_provider_quant_cloud.oauth_refresh';
-    if (!$this->lock->acquire($lock_id, 30)) {
-      // Another worker is refreshing. Wait for it (best-effort), then re-read.
-      $this->lock->wait($lock_id, 30);
-      $this->configFactory->reset('ai_provider_quant_cloud.settings');
-      $this->state->resetCache();
-
-      if (!$this->isAccessTokenExpiring()) {
-        return $this->getAccessToken();
-      }
-      // Peer didn't refresh successfully — try ourselves.
-      $this->lock->acquire($lock_id, 30);
+    if ($decision === 'defer') {
+      return $this->getUsableAccessToken($record);
     }
+    return $this->refreshIfAllowed($record, self::EXPIRY_MARGIN);
+  }
 
-    try {
-      $this->configFactory->reset('ai_provider_quant_cloud.settings');
-      $this->state->resetCache();
-      if (!$this->isAccessTokenExpiring()) {
-        return $this->getAccessToken();
-      }
-
-      $token_data = $this->refreshToken($refresh);
-      if (!$token_data) {
-        return NULL;
-      }
-
-      $this->persistTokens($token_data);
-      return $token_data['access_token'];
+  /**
+   * Refresh the tokens from cron when fewer than 45 days remain.
+   *
+   * For a short-lived token the margin is half its lifetime, so cron does
+   * not refresh on every run.
+   */
+  public function refreshFromCron(): void {
+    if (!$this->usesModuleTokens()) {
+      return;
     }
-    finally {
-      $this->lock->release($lock_id);
+    $record = $this->tokenStore->getAll();
+    $margin = $this->getCronMargin($record);
+    if (empty($record[OAuthTokenStore::ACCESS_TOKEN])) {
+      return;
+    }
+    if (empty($record[OAuthTokenStore::REFRESH_TOKEN])) {
+      $this->keepLegacyTokenAlive($record);
+      return;
+    }
+    if ($this->getRefreshDecision($record, $margin, TRUE) === 'refresh') {
+      $this->refreshIfAllowed($record, $margin);
     }
   }
 
   /**
-   * Whether the stored access token is expired or within 60s of expiring.
+   * One authenticated call each week for a token with no refresh token.
+   *
+   * The time is stored before the call, so that a failing portal is not
+   * called on every cron run.
+   *
+   * @param array $record
+   *   The stored values, from OAuthTokenStore::getAll().
    */
-  protected function isAccessTokenExpiring(): bool {
-    $expires_at = (int) ($this->state->get('quant_cloud_oauth_expires_at') ?? 0);
-    return $expires_at > 0 && (time() + 60) >= $expires_at;
+  protected function keepLegacyTokenAlive(array $record): void {
+    if ($this->isRecordFromAnotherSite($record)) {
+      // A database copy must not keep the live site's token alive.
+      return;
+    }
+    if (empty($record[OAuthTokenStore::FINGERPRINT])) {
+      // A legacy token never refreshes, so nothing else stamps it. Stamp it
+      // here, so that a later database copy can see that it is a copy.
+      $this->tokenStore->set(OAuthTokenStore::FINGERPRINT, $this->getSiteFingerprint());
+    }
+    if ($this->isExpiring($record, self::CRON_MARGIN)) {
+      $this->logBlockedRefresh(self::RECONNECT_LEGACY_TOKEN);
+    }
+    if ((int) ($record[OAuthTokenStore::KEEPALIVE_AT] ?? 0) > time() - self::LEGACY_KEEPALIVE_INTERVAL) {
+      return;
+    }
+    $this->tokenStore->set(OAuthTokenStore::KEEPALIVE_AT, time());
+    $this->getOrganizations();
+  }
+
+  /**
+   * Decide whether to refresh now.
+   *
+   * @param array $record
+   *   The stored values, from OAuthTokenStore::getAll().
+   * @param int $margin
+   *   The expiry margin that makes a refresh due.
+   * @param bool $cron
+   *   TRUE for cron, FALSE for a web or API request.
+   *
+   * @return string
+   *   'refresh'; 'none' when no refresh is due; 'defer' when a refresh is
+   *   due but backs off after an unknown outcome.
+   */
+  protected function getRefreshDecision(array $record, int $margin, bool $cron): string {
+    $pending = $this->getPendingState($record);
+    if ($pending !== 'none') {
+      // Retry a rotation that may have been lost, or wait for its window.
+      return $pending === 'retry' ? 'refresh' : 'defer';
+    }
+    if (!$this->isExpiring($record, $margin)) {
+      return 'none';
+    }
+    $name = $cron ? OAuthTokenStore::CRON_RETRY_AFTER : OAuthTokenStore::RETRY_AFTER;
+    return (int) ($record[$name] ?? 0) > time() ? 'defer' : 'refresh';
+  }
+
+  /**
+   * The state of a refresh of the stored refresh token with no answer.
+   *
+   * @return string
+   *   'none' when there is no such refresh younger than PENDING_WINDOW;
+   *   'wait' when it is younger than PENDING_MIN_AGE or has used its
+   *   retries; 'retry' when the same token may be sent again now.
+   */
+  protected function getPendingState(array $record): string {
+    $pending = $this->getCurrentPending($record);
+    if ($pending === NULL) {
+      return 'none';
+    }
+    $age = time() - (int) ($pending['since'] ?? 0);
+    if ($age < self::PENDING_MIN_AGE || (int) ($pending['attempts'] ?? 1) > self::PENDING_MAX_RETRIES) {
+      return 'wait';
+    }
+    return 'retry';
+  }
+
+  /**
+   * The pending marker, if it is for the stored refresh token and recent.
+   */
+  protected function getCurrentPending(array $record): ?array {
+    $pending = $record[OAuthTokenStore::PENDING] ?? NULL;
+    $refresh = (string) ($record[OAuthTokenStore::REFRESH_TOKEN] ?? '');
+    if (!is_array($pending) || $refresh === '' || (int) ($pending['since'] ?? 0) < time() - self::PENDING_WINDOW) {
+      return NULL;
+    }
+    return hash_equals((string) ($pending['token'] ?? ''), hash('sha256', $refresh)) ? $pending : NULL;
+  }
+
+  /**
+   * The cron refresh margin for the stored token, in seconds.
+   */
+  protected function getCronMargin(array $record): int {
+    $lifetime = (int) ($record[OAuthTokenStore::LIFETIME] ?? 0);
+    return $lifetime > 0 ? min(self::CRON_MARGIN, intdiv($lifetime, 2)) : self::CRON_MARGIN;
+  }
+
+  /**
+   * After a 401 from the API, return a newer stored token to retry with.
+   *
+   * A long-running process (for example a queue worker) can hold a token
+   * that a peer has since rotated.
+   *
+   * @param string $used_token
+   *   The token that the API refused.
+   *
+   * @return string|null
+   *   A different stored token, or NULL when there is none.
+   */
+  public function getTokenAfterUnauthorized(string $used_token): ?string {
+    $token = $this->getAccessToken(TRUE);
+    return $token && !hash_equals($used_token, $token) ? $token : NULL;
+  }
+
+  /**
+   * Refresh, unless a stored condition forbids it.
+   *
+   * @param array $record
+   *   The stored values, from OAuthTokenStore::getAll().
+   * @param int $margin
+   *   The expiry margin that makes a refresh due.
+   */
+  protected function refreshIfAllowed(array $record, int $margin): ?string {
+    $blocker = $this->getRefreshBlocker($record);
+    if ($blocker !== NULL) {
+      $this->logBlockedRefresh($blocker);
+      return $this->getUsableAccessToken($record);
+    }
+    if ($this->database->inTransaction()) {
+      // A read inside the transaction can be stale, the lock row is not
+      // visible to other processes until commit, and a rollback would
+      // discard the saved pair. Cron or the next request refreshes.
+      return $this->getUsableAccessToken($record);
+    }
+
+    $seen_refresh = (string) $record[OAuthTokenStore::REFRESH_TOKEN];
+    if (!$this->acquireRefreshLock($margin)) {
+      return $this->getUsableAccessToken($this->tokenStore->getAll());
+    }
+
+    try {
+      return $this->refreshUnderLock($seen_refresh, $margin);
+    }
+    finally {
+      $this->lock->release(self::REFRESH_LOCK_ID);
+    }
+  }
+
+  /**
+   * Why a refresh must not be sent, if it must not.
+   *
+   * @return string|null
+   *   One of the RECONNECT_* constants, or NULL.
+   */
+  protected function getRefreshBlocker(array $record): ?string {
+    if (empty($record[OAuthTokenStore::REFRESH_TOKEN])) {
+      return self::RECONNECT_LEGACY_TOKEN;
+    }
+    if ($this->isRecordFromAnotherSite($record)) {
+      return self::RECONNECT_OTHER_SITE;
+    }
+    return empty($record[OAuthTokenStore::REFUSAL]) ? NULL : self::RECONNECT_REFUSED;
+  }
+
+  /**
+   * Log, once, why a due refresh was not sent.
+   */
+  protected function logBlockedRefresh(string $blocker): void {
+    if ($blocker === self::RECONNECT_OTHER_SITE) {
+      $this->logOnce('other_site', LogLevel::WARNING, 'The stored Quant Cloud OAuth tokens were issued to another site, for example before a database copy (different: @components). This site does not refresh them. Reconnect this site, or, only if this is the original site, confirm it on the Quant Cloud settings form.', [
+        '@components' => implode(', ', $this->getFingerprintDifferences()),
+      ]);
+      return;
+    }
+    if ($blocker === self::RECONNECT_LEGACY_TOKEN) {
+      $this->logOnce('legacy_token', LogLevel::WARNING, 'The Quant Cloud access token expires and no refresh token is stored. Reconnect Quant Cloud to switch to refreshable tokens.');
+    }
+    // A refusal is logged once when it is recorded.
+  }
+
+  /**
+   * Acquire the refresh lock, waiting once for a peer that holds it.
+   *
+   * @return bool
+   *   TRUE only when this request holds the lock. FALSE when a peer finished
+   *   the refresh during the wait, or when the lock is still unavailable.
+   */
+  protected function acquireRefreshLock(int $margin): bool {
+    if ($this->lock->acquire(self::REFRESH_LOCK_ID, self::REFRESH_LOCK_TIMEOUT)) {
+      return TRUE;
+    }
+
+    $this->lock->wait(self::REFRESH_LOCK_ID, self::REFRESH_LOCK_WAIT);
+    if (!$this->isExpiring($this->tokenStore->getAll(), $margin)) {
+      return FALSE;
+    }
+
+    return $this->lock->acquire(self::REFRESH_LOCK_ID, self::REFRESH_LOCK_TIMEOUT);
+  }
+
+  /**
+   * Refresh the tokens. The caller must hold the refresh lock.
+   *
+   * @param string $seen_refresh
+   *   The refresh token that this request read before it took the lock. If
+   *   the stored one differs now, a peer already refreshed.
+   * @param int $margin
+   *   The expiry margin that makes a refresh due.
+   */
+  protected function refreshUnderLock(string $seen_refresh, int $margin): ?string {
+    $record = $this->tokenStore->getAll();
+    if (!$this->isRefreshStillNeeded($seen_refresh, $record, $margin)) {
+      return $this->getUsableAccessToken($record);
+    }
+
+    $result = $this->requestRefreshOnce((string) $record[OAuthTokenStore::REFRESH_TOKEN]);
+    if ($result['tokens']) {
+      return $this->saveRotatedTokens($result['tokens'], $record);
+    }
+    if ($result['outcome'] === 'refused') {
+      $this->recordRefusal($result['error'], $result['description']);
+    }
+
+    // No new tokens: a peer rotated the token, the outcome is unknown, or the
+    // portal refused it. Use what is stored while it has not expired.
+    return $this->getUsableAccessToken($this->tokenStore->getAll());
+  }
+
+  /**
+   * Whether, under the lock, the refresh must still be sent.
+   *
+   * @param string $seen_refresh
+   *   The refresh token read before the lock.
+   * @param array $record
+   *   The stored values, read under the lock.
+   * @param int $margin
+   *   The expiry margin that makes a refresh due.
+   */
+  protected function isRefreshStillNeeded(string $seen_refresh, array $record, int $margin): bool {
+    $refresh = (string) ($record[OAuthTokenStore::REFRESH_TOKEN] ?? '');
+    if ($refresh === '' || !hash_equals($seen_refresh, $refresh)) {
+      // A peer refreshed already.
+      return FALSE;
+    }
+    if ($this->getRefreshBlocker($record) !== NULL) {
+      return FALSE;
+    }
+    $pending = $this->getPendingState($record);
+    if ($pending !== 'none') {
+      return $pending === 'retry';
+    }
+    return $this->isExpiring($record, $margin);
+  }
+
+  /**
+   * Send the refresh grant once, and back off when there is no answer.
+   *
+   * The portal can commit a rotation whose answer never arrives. From 30 s
+   * to five minutes after it, the portal answers the same (previous)
+   * refresh token once more with a new pair, if the new access token is
+   * unused. The pending marker makes a later process (web or cron) send
+   * the same token again 45 s to 4 minutes after the first send. No
+   * process sleeps or retries inside the request. The caller holds the
+   * lock.
+   */
+  protected function requestRefreshOnce(string $refresh_token): array {
+    $this->keepRunning();
+    $result = $this->sendRefresh($refresh_token);
+    if (in_array($result['outcome'], ['unknown', 'rotated'], TRUE)) {
+      $this->tokenStore->setMany([
+        OAuthTokenStore::RETRY_AFTER => time() + self::REQUEST_BACKOFF,
+        OAuthTokenStore::CRON_RETRY_AFTER => time() + self::CRON_BACKOFF,
+      ]);
+    }
+    return $result;
+  }
+
+  /**
+   * Send the refresh grant with a pending marker around it.
+   *
+   * The marker keeps the time of the first send of this refresh token, so
+   * the retry window follows the portal's rotation time. It stays after an
+   * unknown or "just rotated" outcome, after a success until the new pair
+   * is saved, and when the process dies. A refusal or another definite
+   * error removes it.
+   */
+  protected function sendRefresh(string $refresh_token): array {
+    $previous = $this->getCurrentPending([
+      OAuthTokenStore::PENDING => $this->tokenStore->get(OAuthTokenStore::PENDING),
+      OAuthTokenStore::REFRESH_TOKEN => $refresh_token,
+    ]);
+    $this->tokenStore->set(OAuthTokenStore::PENDING, [
+      'since' => $previous ? (int) $previous['since'] : time(),
+      'token' => hash('sha256', $refresh_token),
+      'attempts' => $previous ? (int) ($previous['attempts'] ?? 1) + 1 : 1,
+    ]);
+    $result = $this->requestRefresh($refresh_token);
+    if (in_array($result['outcome'], ['refused', 'failed'], TRUE)) {
+      $this->tokenStore->delete([OAuthTokenStore::PENDING]);
+    }
+    return $result;
+  }
+
+  /**
+   * Keep the process alive while it holds a rotation in flight.
+   *
+   * A client disconnect or the execution time limit must not stop the
+   * process between the refresh request and the save of the new pair.
+   * Hosts can disable both functions; then this does what it can.
+   */
+  protected function keepRunning(): void {
+    if ($this->canIgnoreUserAbort()) {
+      ignore_user_abort(TRUE);
+    }
+    Environment::setTimeLimit(0);
+  }
+
+  /**
+   * Whether ignore_user_abort() is available on this host.
+   */
+  protected function canIgnoreUserAbort(): bool {
+    return function_exists('ignore_user_abort');
+  }
+
+  /**
+   * Save a rotated token pair and return the new access token.
+   *
+   * Only the token store is written: no config, no Key entity. If the save
+   * fails, the new access token is not used: an unused successor lets the
+   * portal recover the pair when the pending marker is retried.
+   *
+   * @param array $token_data
+   *   The new token response.
+   * @param array $previous
+   *   The stored values before the refresh.
+   */
+  protected function saveRotatedTokens(array $token_data, array $previous): ?string {
+    try {
+      $this->tokenStore->saveTokens($token_data);
+      $this->tokenStore->delete([
+        OAuthTokenStore::PENDING,
+        OAuthTokenStore::LOGGED,
+        OAuthTokenStore::RETRY_AFTER,
+        OAuthTokenStore::CRON_RETRY_AFTER,
+      ]);
+      if (!is_array($this->tokenStore->get(OAuthTokenStore::FINGERPRINT))) {
+        $this->tokenStore->set(OAuthTokenStore::FINGERPRINT, $this->getSiteFingerprint());
+      }
+    }
+    catch (\Throwable $e) {
+      $this->logger->critical('Could not save the refreshed OAuth tokens (@class). The pending refresh is retried later; reconnect to Quant Cloud if requests keep failing.', [
+        '@class' => get_class($e),
+      ]);
+      return $this->getUsableAccessToken($previous);
+    }
+    return $token_data['access_token'];
+  }
+
+  /**
+   * Record a final refusal, so that no further refresh is sent.
+   */
+  protected function recordRefusal(string $error, string $description): void {
+    $this->tokenStore->set(OAuthTokenStore::REFUSAL, [
+      'error' => $error,
+      'description' => $description,
+    ]);
+    $this->logger->error('Quant Cloud refused the OAuth token refresh (@error: @description). Refresh attempts stop until this site reconnects to Quant Cloud.', [
+      '@error' => $error,
+      '@description' => $description ?: 'none',
+    ]);
+  }
+
+  /**
+   * Return the stored access token if it has not expired yet.
+   *
+   * @param array $record
+   *   The stored values, from OAuthTokenStore::getAll().
+   */
+  protected function getUsableAccessToken(array $record): ?string {
+    $access = $record[OAuthTokenStore::ACCESS_TOKEN] ?? NULL;
+    if (!$access) {
+      return NULL;
+    }
+    if ($this->isExpiring($record, 0)) {
+      $this->logOnce('expired', LogLevel::WARNING, 'The Quant Cloud access token expired and was not refreshed. AI requests fail until the token is refreshed or this site reconnects to Quant Cloud.');
+      return NULL;
+    }
+    return $access;
+  }
+
+  /**
+   * Log a message once, until the next rotation or connection.
+   */
+  protected function logOnce(string $id, string $level, string $message, array $context = []): void {
+    $logged = (array) ($this->tokenStore->get(OAuthTokenStore::LOGGED) ?? []);
+    if (in_array($id, $logged, TRUE)) {
+      return;
+    }
+    $logged[] = $id;
+    $this->tokenStore->set(OAuthTokenStore::LOGGED, $logged);
+    $this->logger->log($level, $message, $context);
+  }
+
+  /**
+   * Why this site must act on its Quant Cloud connection, if it must.
+   *
+   * @return string|null
+   *   One of the RECONNECT_* constants, or NULL when no action is needed.
+   */
+  public function getReconnectReason(): ?string {
+    if (!$this->usesModuleTokens()) {
+      return NULL;
+    }
+    $record = $this->tokenStore->getAll();
+    if (empty($record[OAuthTokenStore::ACCESS_TOKEN])) {
+      return NULL;
+    }
+    return $this->getRefreshBlocker($record);
+  }
+
+  /**
+   * The text that tells an administrator why and how to act, if needed.
+   */
+  public function getReconnectMessage(): ?TranslatableMarkup {
+    $reason = $this->getReconnectReason();
+    if ($reason === self::RECONNECT_OTHER_SITE) {
+      return new TranslatableMarkup('The Quant Cloud OAuth tokens on this site were issued to another site, for example before a database copy (different: @components). This site does not refresh them. Reconnect this site to Quant Cloud before the access token expires. Only if this is the original site (for example after a settings change), confirm it with "This is the same site — keep the connection".', [
+        '@components' => implode(', ', $this->getFingerprintDifferences()),
+      ]);
+    }
+    if ($reason === self::RECONNECT_REFUSED) {
+      $refusal = (array) $this->tokenStore->get(OAuthTokenStore::REFUSAL);
+      return new TranslatableMarkup('Quant Cloud refused to refresh the OAuth token (@error: @description). Reconnect this site to Quant Cloud.', [
+        '@error' => $refusal['error'] ?? '',
+        '@description' => $refusal['description'] ?? '',
+      ]);
+    }
+    if ($reason === self::RECONNECT_LEGACY_TOKEN) {
+      return new TranslatableMarkup('Reconnect Quant Cloud to switch to refreshable tokens. This site uses an older OAuth token that does not refresh, and Quant Cloud will retire these tokens.');
+    }
+    return NULL;
+  }
+
+  /**
+   * Accept the stored tokens as this site's own, without OAuth.
+   *
+   * For a site whose fingerprint changed although it is the same site (for
+   * example after a database server move).
+   */
+  public function confirmSameSite(): void {
+    $this->tokenStore->set(OAuthTokenStore::FINGERPRINT, $this->getSiteFingerprint());
+    $this->tokenStore->delete([OAuthTokenStore::LOGGED]);
+  }
+
+  /**
+   * Whether the stored tokens were issued to a different site.
+   */
+  public function isTokenFromAnotherSite(): bool {
+    return $this->isRecordFromAnotherSite($this->tokenStore->getAll());
+  }
+
+  /**
+   * Whether a stored record carries another site's fingerprint.
+   *
+   * A record without a fingerprint (stored before 1.1.0, or moved by
+   * update 10004) counts as this site's own. It gets a fingerprint on the
+   * next refresh or connect.
+   */
+  protected function isRecordFromAnotherSite(array $record): bool {
+    $stored = $record[OAuthTokenStore::FINGERPRINT] ?? NULL;
+    if (is_string($stored) && $stored !== '') {
+      return !$this->adoptLegacyFingerprint($stored);
+    }
+    if (!is_array($stored) || $stored === []) {
+      return FALSE;
+    }
+    return $this->siteFingerprint->getDifferences($stored) !== [];
+  }
+
+  /**
+   * Restamp a development-build string fingerprint if it is this site's.
+   *
+   * @return bool
+   *   TRUE if the string matches this site's result of the same formula.
+   */
+  protected function adoptLegacyFingerprint(string $stored): bool {
+    if (!hash_equals($stored, $this->siteFingerprint->computeLegacyStoreFormat())) {
+      return FALSE;
+    }
+    $this->tokenStore->set(OAuthTokenStore::FINGERPRINT, $this->getSiteFingerprint());
+    return TRUE;
+  }
+
+  /**
+   * The fingerprint components that differ from the stored fingerprint.
+   *
+   * @return string[]
+   *   Readable component names, without values.
+   */
+  public function getFingerprintDifferences(): array {
+    $stored = $this->tokenStore->get(OAuthTokenStore::FINGERPRINT);
+    if (is_string($stored) && $stored !== '') {
+      return $this->adoptLegacyFingerprint($stored) ? [] : ['fingerprint from a development build'];
+    }
+    return is_array($stored) ? $this->siteFingerprint->getDifferences($stored) : [];
+  }
+
+  /**
+   * This site's fingerprint: component name => hash.
+   *
+   * See SiteFingerprint for the components.
+   * $settings['ai_provider_quant_cloud_site_id'] replaces the automatic
+   * components, for environments that share them.
+   *
+   * @return array<string,string>
+   *   One hash per component.
+   */
+  public function getSiteFingerprint(): array {
+    return $this->siteFingerprint->compute();
+  }
+
+  /**
+   * Whether the stored access token expires within the given margin.
+   *
+   * @param array $record
+   *   The stored values, from OAuthTokenStore::getAll().
+   * @param int $margin
+   *   Seconds before the expiry at which the token counts as expiring.
+   */
+  protected function isExpiring(array $record, int $margin): bool {
+    $expires_at = (int) ($record[OAuthTokenStore::EXPIRES_AT] ?? 0);
+    return $expires_at > 0 && (time() + $margin) >= $expires_at;
+  }
+
+  /**
+   * The dashboard base URL for the configured platform.
+   */
+  protected function getDashboardUrl(): string {
+    $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
+    $platform = $config->get('platform') ?: 'quantcdn';
+    return PortalUrl::forPlatform($platform, $config->get("platforms.{$platform}.dashboard_url"));
   }
 
   /**
@@ -484,15 +1482,7 @@ class AuthService {
    *   URL where users can generate an access token.
    */
   public function getTokenGenerationUrl(): string {
-    $config = $this->configFactory->get('ai_provider_quant_cloud.settings');
-    $platform = $config->get('platform') ?: 'quantcdn';
-    
-    $dashboard_url = $config->get("platforms.{$platform}.dashboard_url");
-    
-    // Assume there's a tokens or API settings page
-    // Adjust this path based on your actual dashboard structure
-    return $dashboard_url . '/account/api-tokens';
+    return $this->getDashboardUrl() . '/account/api-tokens';
   }
 
 }
-

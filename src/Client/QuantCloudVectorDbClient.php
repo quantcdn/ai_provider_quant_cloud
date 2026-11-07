@@ -2,6 +2,7 @@
 
 namespace Drupal\ai_provider_quant_cloud\Client;
 
+use Drupal\ai_provider_quant_cloud\PortalUrl;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\ai_provider_quant_cloud\Service\AuthService;
@@ -16,6 +17,8 @@ use Psr\Log\LoggerInterface;
  * semantic search operations via the Quant Cloud Dashboard API.
  */
 class QuantCloudVectorDbClient {
+
+  use AuthRetryTrait;
 
   /**
    * The HTTP client.
@@ -119,15 +122,7 @@ class QuantCloudVectorDbClient {
   protected function getDashboardUrl(): string {
     $config = $this->getConfig();
     $platform = $config->get('platform') ?: 'quantcdn';
-
-    $urls = [
-      'quantcdn' => 'https://dashboard.quantcdn.io',
-      'quantgov' => 'https://dash.quantgov.cloud',
-      'quantcdn_staging' => 'https://portal.stage.quantcdn.io',
-      'quantgov_staging' => 'https://dash.stage.quantgov.cloud',
-    ];
-
-    return rtrim($urls[$platform] ?? $urls['quantcdn'], '/');
+    return PortalUrl::forPlatform($platform, $config->get("platforms.{$platform}.dashboard_url"));
   }
 
   /**
@@ -154,7 +149,7 @@ class QuantCloudVectorDbClient {
    * Build full API endpoint URL for VectorDB API.
    *
    * @param string $path
-   *   API path relative to /api/v3/organisations/{orgId}/ai/vector-db/
+   *   API path relative to /api/v3/organisations/{orgId}/ai/vector-db/.
    *
    * @return string
    *   The full API URL.
@@ -173,7 +168,7 @@ class QuantCloudVectorDbClient {
    * Make a POST request to the VectorDB API.
    *
    * @param string $path
-   *   API path relative to /vector-db/
+   *   API path relative to /vector-db/.
    * @param array $data
    *   Request body data.
    * @param array $request_options
@@ -204,7 +199,7 @@ class QuantCloudVectorDbClient {
         ]);
       }
 
-      $response = $this->httpClient->post($url, $options);
+      $response = $this->sendWithAuthRetry('POST', $url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
 
@@ -228,7 +223,7 @@ class QuantCloudVectorDbClient {
    * Make a GET request to the VectorDB API.
    *
    * @param string $path
-   *   API path relative to /vector-db/
+   *   API path relative to /vector-db/.
    * @param array $query_params
    *   Query parameters.
    *
@@ -259,7 +254,7 @@ class QuantCloudVectorDbClient {
         ]);
       }
 
-      $response = $this->httpClient->get($url, $options);
+      $response = $this->sendWithAuthRetry('GET', $url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
 
@@ -283,7 +278,7 @@ class QuantCloudVectorDbClient {
    * Make a DELETE request to the VectorDB API.
    *
    * @param string $path
-   *   API path relative to /vector-db/
+   *   API path relative to /vector-db/.
    *
    * @return array
    *   Response data.
@@ -308,7 +303,7 @@ class QuantCloudVectorDbClient {
         ]);
       }
 
-      $response = $this->httpClient->delete($url, $options);
+      $response = $this->sendWithAuthRetry('DELETE', $url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
 
@@ -474,7 +469,7 @@ class QuantCloudVectorDbClient {
    * Supports three deletion modes:
    * 1. purgeAll - Delete ALL documents in the collection
    * 2. documentIds - Delete specific documents by UUID
-   * 3. metadata - Delete by metadata field match
+   * 3. metadata - Delete by metadata field match.
    *
    * @param string $collection_id
    *   The collection UUID.
@@ -533,7 +528,7 @@ class QuantCloudVectorDbClient {
         ]);
       }
 
-      $response = $this->httpClient->delete($url, $options);
+      $response = $this->sendWithAuthRetry('DELETE', $url, $options);
       $body = $response->getBody()->getContents();
       $result = json_decode($body, TRUE);
 

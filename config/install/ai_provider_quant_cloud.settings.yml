@@ -22,7 +22,7 @@ auth:
 model:
   default: 'amazon.nova-lite-v1:0'
   temperature: 0.7
-  max_tokens: 16384
+  max_tokens: 32768
 
 # Advanced request settings.
 advanced:

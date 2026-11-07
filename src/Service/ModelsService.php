@@ -43,7 +43,7 @@ class ModelsService {
   public function __construct(
     QuantCloudClient $client,
     CacheBackendInterface $cache,
-    LoggerChannelFactoryInterface $logger_factory
+    LoggerChannelFactoryInterface $logger_factory,
   ) {
     $this->client = $client;
     $this->cache = $cache;
@@ -63,41 +63,41 @@ class ModelsService {
    */
   public function getModels(?string $feature = NULL, bool $bypass_cache = FALSE): array {
     $cache_key = 'ai_provider_quant_cloud:models:' . ($feature ?? 'all');
-    
-    // Try cache first
+
+    // Try cache first.
     if (!$bypass_cache) {
       $cached = $this->cache->get($cache_key);
       if ($cached && !empty($cached->data)) {
         return $cached->data;
       }
     }
-    
+
     try {
-      // Fetch from API
+      // Fetch from API.
       $filters = [];
       if ($feature) {
         $filters['feature'] = $feature;
       }
-      
+
       $response = $this->client->getModels($filters);
       $models = $response['models'] ?? [];
-      
-      // Cache the result
+
+      // Cache the result.
       $this->cache->set(
         $cache_key,
         $models,
         time() + self::CACHE_LIFETIME
       );
-      
+
       return $models;
-      
+
     }
     catch (\Exception $e) {
       $this->logger->error('Failed to fetch models from API: @message', [
         '@message' => $e->getMessage(),
       ]);
-      
-      // Return fallback minimal list
+
+      // Return fallback minimal list.
       return $this->getFallbackModels($feature);
     }
   }
@@ -116,15 +116,54 @@ class ModelsService {
   public function getModelDetails(string $model_id, bool $bypass_cache = FALSE): ?array {
     // First, try to get from the cached models list (more efficient)
     $all_models = $this->getModels(NULL, $bypass_cache);
-    
+
     foreach ($all_models as $model) {
       if (isset($model['id']) && $model['id'] === $model_id) {
         return $model;
       }
     }
-    
+
     // If not found in list, return NULL
-    // The Dashboard API doesn't have a single-model endpoint yet
+    // The Dashboard API doesn't have a single-model endpoint yet.
+    return NULL;
+  }
+
+  /**
+   * Get the maximum output tokens supported by a given model.
+   *
+   * Used by the HTTP clients to clamp user-configured maxTokens down to the
+   * model's hard cap before sending a request upstream. Returning NULL means
+   * "unknown — do not clamp".
+   *
+   * @param string $model_id
+   *   Model identifier.
+   *
+   * @return int|null
+   *   Positive integer cap, or NULL when unknown.
+   */
+  public function getMaxOutputTokens(string $model_id): ?int {
+    try {
+      $all_models = $this->getModels();
+    }
+    catch (\Exception $e) {
+      // Defensive: getModels() already swallows API errors internally, but if
+      // the client itself is misconfigured (e.g. missing organisation ID at
+      // construct of the cache lookup), don't propagate — callers treat NULL
+      // as "unknown, pass through".
+      $this->logger->warning('Could not resolve max output tokens for @model: @message', [
+        '@model' => $model_id,
+        '@message' => $e->getMessage(),
+      ]);
+      return NULL;
+    }
+
+    foreach ($all_models as $model) {
+      if (($model['id'] ?? NULL) === $model_id) {
+        $cap = (int) ($model['maxOutputTokens'] ?? 0);
+        return $cap > 0 ? $cap : NULL;
+      }
+    }
+
     return NULL;
   }
 
@@ -138,18 +177,18 @@ class ModelsService {
    *   Associative array of model_id => model_label (simple string).
    */
   public function getModelsForOperation(string $operation_type): array {
-    // Map Drupal AI operation types to API features
+    // Map Drupal AI operation types to API features.
     $feature_map = [
       'chat' => 'chat',
       'embeddings' => 'embeddings',
       'text_to_image' => 'image_generation',
       'image_to_image' => 'image_generation',
     ];
-    
+
     $feature = $feature_map[$operation_type] ?? NULL;
     $models = $this->getModels($feature);
-    
-    // Drupal expects simple string labels for form dropdowns
+
+    // Drupal expects simple string labels for form dropdowns.
     $result = [];
     foreach ($models as $model) {
       $model_id = $model['id'] ?? NULL;
@@ -158,7 +197,7 @@ class ModelsService {
         $result[$model_id] = $model_name;
       }
     }
-    
+
     return $result;
   }
 
@@ -166,6 +205,10 @@ class ModelsService {
    * Get fallback models when API is unavailable.
    *
    * This is a minimal emergency fallback only.
+   *
+   * @todo Update when new Bedrock models are onboarded. Long term, fetch
+   *   from a dashboard endpoint that exposes per-model caps so this
+   *   hardcoded fallback isn't needed.
    *
    * @param string|null $feature
    *   Optional feature filter.
@@ -212,14 +255,14 @@ class ModelsService {
         'supportedFeatures' => ['image_generation'],
       ],
     ];
-    
-    // Filter by feature if specified
+
+    // Filter by feature if specified.
     if ($feature) {
-      $all_models = array_filter($all_models, function($model) use ($feature) {
+      $all_models = array_filter($all_models, function ($model) use ($feature) {
         return in_array($feature, $model['supportedFeatures']);
       });
     }
-    
+
     return array_values($all_models);
   }
 
@@ -229,7 +272,7 @@ class ModelsService {
    * Useful after configuration changes or for troubleshooting.
    */
   public function clearCache(): void {
-    // Clear all model-related cache entries
+    // Clear all model-related cache entries.
     $this->cache->deleteMultiple([
       'ai_provider_quant_cloud:models:all',
       'ai_provider_quant_cloud:models:chat',
@@ -240,4 +283,3 @@ class ModelsService {
   }
 
 }
-

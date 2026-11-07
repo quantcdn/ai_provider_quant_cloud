@@ -6,6 +6,7 @@
  */
 
 use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\key\KeyInterface;
 
 /**
  * Implements hook_help().
@@ -15,7 +16,7 @@ function ai_provider_quant_cloud_help($route_name, RouteMatchInterface $route_ma
     case 'help.page.ai_provider_quant_cloud':
       $output = '<h3>' . t('About') . '</h3>';
       $output .= '<p>' . t('The Quant Cloud AI Provider module enables integration with Quant Cloud AI services, providing access to AWS Bedrock models through the Quant Cloud platform.') . '</p>';
-      
+
       $output .= '<h3>' . t('Features') . '</h3>';
       $output .= '<ul>';
       $output .= '<li>' . t('<strong>Chat Completions:</strong> Multi-turn conversations with Claude and Nova models') . '</li>';
@@ -25,19 +26,19 @@ function ai_provider_quant_cloud_help($route_name, RouteMatchInterface $route_ma
       $output .= '<li>' . t('<strong>Multi-Tenant:</strong> Organization-level access control') . '</li>';
       $output .= '<li>' . t('<strong>Government-Ready:</strong> Designed for compliance with Australian government standards') . '</li>';
       $output .= '</ul>';
-      
+
       $output .= '<h3>' . t('Platform Support') . '</h3>';
       $output .= '<p>' . t('This provider works with both:') . '</p>';
       $output .= '<ul>';
       $output .= '<li>' . t('<strong>QuantCDN:</strong> https://dashboard.quantcdn.io') . '</li>';
       $output .= '<li>' . t('<strong>QuantGov Cloud:</strong> https://dash.quantgov.cloud') . '</li>';
       $output .= '</ul>';
-      
+
       $output .= '<h3>' . t('Configuration') . '</h3>';
       $output .= '<p>' . t('Configure the provider at <a href=":url">Administration > Configuration > AI > Quant Cloud AI Settings</a>.', [
         ':url' => \Drupal::url('ai_provider_quant_cloud.settings_form'),
       ]) . '</p>';
-      
+
       $output .= '<h3>' . t('Authentication') . '</h3>';
       $output .= '<p>' . t('The module supports OAuth2 authentication through the Quant Cloud dashboard. You will need:') . '</p>';
       $output .= '<ul>';
@@ -45,8 +46,40 @@ function ai_provider_quant_cloud_help($route_name, RouteMatchInterface $route_ma
       $output .= '<li>' . t('API access token from your dashboard') . '</li>';
       $output .= '<li>' . t('Organization ID') . '</li>';
       $output .= '</ul>';
-      
+
       return $output;
   }
 }
 
+/**
+ * Implements hook_cron().
+ *
+ * Refreshes the OAuth tokens long before they expire, so that requests
+ * rarely refresh (for example inside a database transaction).
+ */
+function ai_provider_quant_cloud_cron() {
+  \Drupal::service('ai_provider_quant_cloud.auth')->refreshFromCron();
+}
+
+/**
+ * Implements hook_ENTITY_TYPE_presave() for key entities.
+ *
+ * Keeps the module's OAuth Keys on the pointer provider, so that a config
+ * import of an export from an earlier release does not put a token value
+ * back into active config.
+ */
+function ai_provider_quant_cloud_key_presave(KeyInterface $key) {
+  // EntityBase::getOriginal() exists from drupal:11.2.
+  $original = method_exists($key, 'getOriginal') ? $key->getOriginal() : ($key->original ?? NULL);
+  \Drupal::service('ai_provider_quant_cloud.auth')->protectModuleKey($key, $original instanceof KeyInterface ? $original : NULL);
+}
+
+/**
+ * Implements hook_ENTITY_TYPE_predelete() for key entities.
+ *
+ * If a config import deletes a module OAuth Key before "drush updb" moved
+ * its value, the value is copied into the token store first.
+ */
+function ai_provider_quant_cloud_key_predelete(KeyInterface $key) {
+  \Drupal::service('ai_provider_quant_cloud.auth')->rescueKeyValue($key);
+}

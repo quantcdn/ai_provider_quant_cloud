@@ -3,6 +3,7 @@
 namespace Drupal\ai_provider_quant_cloud\Form;
 
 use Drupal\ai_provider_quant_cloud\Client\QuantCloudClient;
+use Drupal\ai_provider_quant_cloud\Service\AuthService;
 use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Url;
@@ -93,11 +94,15 @@ class QuantCloudConfigForm extends ConfigFormBase {
       ],
     ];
 
+    $needs_reconnect = $this->addReconnectWarning($form);
+
     // Check if already OAuth connected
     $is_oauth_connected = $config->get('auth.method') === 'oauth' && $config->get('auth.access_token_key');
 
     if ($is_oauth_connected) {
-      $form['auth_section']['oauth_status'] = [
+      // The reconnect warning replaces the "connected" status: both at once
+      // contradict each other.
+      $form['auth_section']['oauth_status'] = $needs_reconnect ? [] : [
         '#type' => 'html_tag',
         '#tag' => 'div',
         '#attributes' => [
@@ -436,6 +441,46 @@ class QuantCloudConfigForm extends ConfigFormBase {
     ];
 
     return parent::buildForm($form, $form_state);
+  }
+
+  /**
+   * Show why and how to reconnect, when the stored tokens need it.
+   *
+   * @return bool
+   *   TRUE when the warning was added.
+   */
+  protected function addReconnectWarning(array &$form): bool {
+    $message = $this->authService->getReconnectMessage();
+    if ($message === NULL) {
+      return FALSE;
+    }
+    $form['auth_section']['reconnect_warning'] = [
+      '#type' => 'container',
+      '#weight' => -20,
+      '#attributes' => [
+        'class' => ['messages', 'messages--warning'],
+        'role' => 'alert',
+      ],
+      'text' => [
+        '#plain_text' => $message,
+        '#suffix' => ' ',
+      ],
+      'link' => [
+        '#type' => 'link',
+        '#title' => $this->t('Reconnect to Quant Cloud'),
+        '#url' => Url::fromRoute('ai_provider_quant_cloud.oauth_connect'),
+      ],
+    ];
+    $keep_url = Url::fromRoute('ai_provider_quant_cloud.keep_connection');
+    if ($this->authService->getReconnectReason() === AuthService::RECONNECT_OTHER_SITE && $keep_url->access()) {
+      $form['auth_section']['reconnect_warning']['keep_connection'] = [
+        '#type' => 'link',
+        '#title' => $this->t('This is the same site — keep the connection'),
+        '#url' => $keep_url,
+        '#prefix' => ' ',
+      ];
+    }
+    return TRUE;
   }
 
   /**

@@ -1,0 +1,4 @@
+confirm quant cloud same site:
+  title: 'Confirm that this is the original Quant Cloud site'
+  description: 'Accept the stored Quant Cloud OAuth tokens as this site''s own after its site fingerprint changed. A copy of the database that confirms logs the original site out of Quant Cloud.'
+  restrict access: true

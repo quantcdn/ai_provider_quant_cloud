@@ -44,7 +44,7 @@ class OAuthController extends ControllerBase {
    */
   public function __construct(
     AuthService $auth_service,
-    KeyRepositoryInterface $key_repository
+    KeyRepositoryInterface $key_repository,
   ) {
     $this->authService = $auth_service;
     $this->keyRepository = $key_repository;
@@ -128,20 +128,7 @@ class OAuthController extends ControllerBase {
    * Disconnects OAuth and removes tokens.
    */
   public function disconnect(Request $request) {
-    foreach (['quant_cloud_oauth_access_token', 'quant_cloud_oauth_refresh_token'] as $key_id) {
-      $key = $this->keyRepository->getKey($key_id);
-      if ($key) {
-        $key->delete();
-      }
-    }
-
-    $this->state()->delete('quant_cloud_oauth_expires_at');
-
-    $config = \Drupal::configFactory()->getEditable('ai_provider_quant_cloud.settings');
-    $config->set('auth.method', 'manual');
-    $config->set('auth.access_token_key', NULL);
-    $config->set('auth.refresh_token_key', NULL);
-    $config->save();
+    $this->authService->disconnect();
 
     $this->messenger()->addStatus($this->t('Disconnected from Quant Cloud. Your tokens have been removed.'));
 
@@ -149,4 +136,3 @@ class OAuthController extends ControllerBase {
   }
 
 }
-

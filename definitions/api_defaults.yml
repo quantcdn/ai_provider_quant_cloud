@@ -15,7 +15,7 @@ chat:
       label: 'Max Tokens'
       description: 'The maximum number of tokens to generate. Supported upper limits vary by model.'
       type: 'integer'
-      default: 16384
+      default: 32768
       required: false
       constraints:
         min: 1
